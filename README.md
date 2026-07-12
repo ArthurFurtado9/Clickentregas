@@ -1,13 +1,15 @@
 # ClickEntregas 🚚💨
 
-O **ClickEntregas** é um sistema completo e otimizado para gestão de pedidos e entregas locais de mantimentos e fracionados. Ele resolve o problema de logística e controle operacional de pequenos comércios e delivery, fornecendo uma experiência rápida de compra e um gerenciador operacional integrado a partir de uma stack reativa em **React** e um backend serverless em **Supabase**.
+O **ClickEntregas** é uma plataforma de gestão de pedidos e entregas desenvolvida com **React**, **Supabase** e **PostgreSQL**.
+
+O sistema oferece catálogo de produtos, checkout inteligente, controle de estoque, gestão de pedidos e painel administrativo integrado.
 
 ---
 
 ## 🔗 Demonstração
 
 O projeto pode ser acessado em produção através do link abaixo:
-* **[Link para Demonstração Ativa (Deploy)](https://clickentregas.vercel.app)**
+* **https://clickentregas.vercel.app**
 
 ---
 
@@ -115,9 +117,6 @@ npm run dev
 # Gerar build de produção
 npm run build
 ```
-
-> [!TIP]
-> O arquivo com a estrutura de tabelas, triggers e RLS do Supabase está disponível no arquivo [database.sql](./database.sql) na raiz deste repositório para facilitar a replicação do banco.
 
 ---
 

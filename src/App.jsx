@@ -3,7 +3,7 @@ import {
   ShoppingBag, ShoppingCart, Trash2, Plus, Minus, Check, Truck, 
   Settings, LogOut, Package, Edit, MapPin, User, Phone, ArrowLeft, 
   Search, FileText, X, ChevronRight, Info, ExternalLink, RefreshCw, PlusCircle, Calendar,
-  Star, Scale, CheckSquare, Square, TrendingUp, DollarSign, Undo2, MessageSquare, Tag, Users
+  Star, Scale, CheckSquare, Square, TrendingUp, DollarSign, Undo2, MessageSquare, Tag, Users, ClipboardList, Copy
 } from 'lucide-react'
 import { supabase, isSupabaseConfigured, updateSupabaseHeaders } from './supabaseClient'
 
@@ -222,6 +222,9 @@ function App() {
   const [adminOrderPaymentFilter, setAdminOrderPaymentFilter] = useState('all') // all, pending, paid
   const [clientOrderHistoryTab, setClientOrderHistoryTab] = useState('in_progress') // in_progress, awaiting_payment, paid
   const [mobileAdminMenuOpen, setMobileAdminMenuOpen] = useState(false) // Mobile admin tab navigation menu open state
+  const [showItemReportModal, setShowItemReportModal] = useState(false)
+  const [itemReportFilter, setItemReportFilter] = useState('current') // 'current' | 'pending' | 'assembled' | 'delivered' | 'all'
+  const [itemReportCopied, setItemReportCopied] = useState(false)
   
   // Weight Popup and Ratings States
   const [showWeightModal, setShowWeightModal] = useState(false)
@@ -2589,7 +2592,7 @@ function App() {
     setDeliveringOrder(order)
   }
 
-  const markAsDeliveredQuery = async (order, includeCharge = true) => {
+  const markAsDeliveredQuery = async (order, includeCharge = true, sendMessage = true) => {
     setAdminLoading(true)
     try {
       // 1. Update order status
@@ -2603,8 +2606,12 @@ function App() {
       // Update UI first
       loadAdminOrders()
 
-      // 2. Open WhatsApp link
-      sendWhatsAppMessage(order, includeCharge)
+      // 2. Open WhatsApp link if sendMessage is true, else show success toast
+      if (sendMessage) {
+        sendWhatsAppMessage(order, includeCharge)
+      } else {
+        addToast('Pedido baixado como entregue com sucesso!', 'success')
+      }
     } catch (err) {
       showAlert('Erro', sanitizeErrorMessage(err))
     } finally {
@@ -4742,13 +4749,25 @@ function App() {
               <div className="space-y-6">
               <div className="flex items-center justify-between flex-wrap gap-4">
                 <h2 className="text-xl font-bold text-slate-800">Pedidos no Sistema</h2>
-                <button
-                  onClick={loadAdminOrders}
-                  className="p-2 hover:bg-slate-100 rounded-lg text-slate-600 transition flex items-center gap-1.5 text-xs font-semibold"
-                >
-                  <RefreshCw className="w-4 h-4" />
-                  Atualizar
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      setItemReportFilter('current')
+                      setShowItemReportModal(true)
+                    }}
+                    className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl transition flex items-center gap-1.5 text-xs font-semibold shadow-xs"
+                  >
+                    <ClipboardList className="w-4 h-4" />
+                    Relatório de Itens
+                  </button>
+                  <button
+                    onClick={loadAdminOrders}
+                    className="p-2 hover:bg-slate-100 rounded-lg text-slate-600 transition flex items-center gap-1.5 text-xs font-semibold"
+                  >
+                    <RefreshCw className="w-4 h-4" />
+                    Atualizar
+                  </button>
+                </div>
               </div>
 
               {/* Order Filtering and Tabs */}
@@ -7119,7 +7138,7 @@ function App() {
                   const order = deliveringOrder;
                   setDeliveringOrder(null);
                   if (order.status !== 'delivered') {
-                    markAsDeliveredQuery(order, true);
+                    markAsDeliveredQuery(order, true, true);
                   } else {
                     sendWhatsAppMessage(order, true);
                   }
@@ -7135,7 +7154,7 @@ function App() {
                   const order = deliveringOrder;
                   setDeliveringOrder(null);
                   if (order.status !== 'delivered') {
-                    markAsDeliveredQuery(order, false);
+                    markAsDeliveredQuery(order, false, true);
                   } else {
                     sendWhatsAppMessage(order, false);
                   }
@@ -7144,6 +7163,22 @@ function App() {
               >
                 <Check className="w-4 h-4 text-emerald-600" />
                 Mensagem SEM Cobrança
+              </button>
+
+              <button
+                onClick={() => {
+                  const order = deliveringOrder;
+                  setDeliveringOrder(null);
+                  if (order.status !== 'delivered') {
+                    markAsDeliveredQuery(order, false, false);
+                  } else {
+                    addToast('Este pedido já consta como entregue.', 'info');
+                  }
+                }}
+                className="w-full py-3 bg-slate-800 hover:bg-slate-900 text-white font-semibold rounded-xl text-xs transition shadow-sm flex items-center justify-center gap-2"
+              >
+                <CheckSquare className="w-4 h-4 text-emerald-400" />
+                Dar Baixa (Sem Mensagem)
               </button>
               
               <button
@@ -7156,6 +7191,302 @@ function App() {
           </div>
         </div>
       )}
+
+      {/* MODAL: AGGREGATED ITEM REPORT */}
+      {showItemReportModal && (() => {
+        // Calculate filteredOrders for 'current' filter context
+        const filteredCurrentOrders = orders.filter((order) => {
+          let matchesTab = false;
+          if (adminOrderSubTab === 'pending') {
+            matchesTab = order.status !== 'delivered' && !order.is_assembled;
+          } else if (adminOrderSubTab === 'assembled') {
+            matchesTab = order.status !== 'delivered' && order.is_assembled;
+          } else if (adminOrderSubTab === 'delivered') {
+            matchesTab = order.status === 'delivered';
+          }
+          const clientName = order.customers?.name || '';
+          const matchesSearch = clientName.toLowerCase().includes(orderSearchQuery.toLowerCase());
+          
+          let matchesPayment = true;
+          if (adminOrderSubTab === 'delivered') {
+            if (adminOrderPaymentFilter === 'paid') {
+              matchesPayment = order.payment_status === 'paid';
+            } else if (adminOrderPaymentFilter === 'pending') {
+              matchesPayment = order.payment_status !== 'paid';
+            }
+          }
+
+          let matchesGroup = true;
+          if (adminOrderGroupFilter === 'none') {
+            matchesGroup = !order.customers?.group_name;
+          } else if (adminOrderGroupFilter !== 'all') {
+            matchesGroup = order.customers?.group_name && order.customers.group_name.trim().toLowerCase() === adminOrderGroupFilter.trim().toLowerCase();
+          }
+          
+          return matchesTab && matchesSearch && matchesPayment && matchesGroup;
+        });
+
+        let targetOrders = [];
+        if (itemReportFilter === 'current') {
+          targetOrders = filteredCurrentOrders;
+        } else if (itemReportFilter === 'pending') {
+          targetOrders = orders.filter(o => o.status !== 'delivered' && !o.is_assembled);
+        } else if (itemReportFilter === 'assembled') {
+          targetOrders = orders.filter(o => o.status !== 'delivered' && o.is_assembled);
+        } else if (itemReportFilter === 'delivered') {
+          targetOrders = orders.filter(o => o.status === 'delivered');
+        } else {
+          targetOrders = orders.filter(o => o.status !== 'cancelled');
+        }
+
+        const getEggTrayDetails = (name, totalQty) => {
+          if (!name) return null;
+          const match = name.match(/(\d+)\s*ovos?/i);
+          if (match) {
+            const countPerUnit = parseInt(match[1], 10);
+            if (!isNaN(countPerUnit) && countPerUnit > 0) {
+              const totalEggs = Math.round(totalQty * countPerUnit);
+              const trays15 = totalEggs / 15;
+              return {
+                countPerUnit,
+                totalEggs,
+                trays15,
+                isInteger15: Number.isInteger(trays15)
+              };
+            }
+          } else if (name.toLowerCase().includes('ovo')) {
+            const totalEggs = Math.round(totalQty * 15);
+            return {
+              countPerUnit: 15,
+              totalEggs,
+              trays15: totalQty,
+              isInteger15: Number.isInteger(totalQty)
+            };
+          }
+          return null;
+        };
+
+        // Aggregate items
+        const aggregatedMap = {};
+        targetOrders.forEach(order => {
+          if (order.status === 'cancelled') return;
+          if (Array.isArray(order.order_items)) {
+            order.order_items.forEach(item => {
+              const prodName = item.products?.name || 'Item';
+              const unit = item.products?.unit || 'un';
+              const key = item.product_id ? `id_${item.product_id}` : `name_${prodName}_${unit}`;
+              const qty = (item.quantity_final !== null && item.quantity_final !== undefined)
+                ? item.quantity_final
+                : (item.quantity_requested !== undefined ? item.quantity_requested : (item.quantity || 0));
+
+              if (!aggregatedMap[key]) {
+                aggregatedMap[key] = {
+                  id: key,
+                  name: prodName,
+                  unit: unit,
+                  totalQty: 0,
+                  orderCount: 0
+                };
+              }
+              aggregatedMap[key].totalQty += Number(qty) || 0;
+              aggregatedMap[key].orderCount += 1;
+            });
+          }
+        });
+
+        const aggregatedList = Object.values(aggregatedMap).sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+
+        let totalAllEggs = 0;
+        aggregatedList.forEach(item => {
+          const eggInfo = getEggTrayDetails(item.name, item.totalQty);
+          if (eggInfo) {
+            totalAllEggs += eggInfo.totalEggs;
+          }
+        });
+        const totalAllTrays15 = totalAllEggs / 15;
+
+        const handleCopyTextReport = () => {
+          const filterLabelMap = {
+            current: 'Filtro Atual da Tela',
+            pending: 'Entrega Pendente',
+            assembled: 'Montados',
+            delivered: 'Entregues',
+            all: 'Todos os Pedidos'
+          };
+
+          let text = `📋 *RELATÓRIO DE ITENS SOLICITADOS*\n`;
+          text += `Contexto: ${filterLabelMap[itemReportFilter] || 'Geral'}\n`;
+          text += `Total de Pedidos: ${targetOrders.length}\n`;
+          text += `------------------------------------\n`;
+
+          if (aggregatedList.length === 0) {
+            text += `Nenhum item encontrado nos pedidos.`;
+          } else {
+            aggregatedList.forEach(item => {
+              const eggInfo = getEggTrayDetails(item.name, item.totalQty);
+              let qtyStr = '';
+              if (eggInfo) {
+                const traysStr = eggInfo.isInteger15 
+                  ? Math.round(eggInfo.trays15) 
+                  : eggInfo.trays15.toFixed(1);
+                qtyStr = `${traysStr} bandeja(s) de 15 (${eggInfo.totalEggs} ovos)`;
+              } else if (item.unit === 'kg') {
+                qtyStr = item.totalQty.toLocaleString('pt-BR', { minimumFractionDigits: 3, maximumFractionDigits: 3 }) + ' kg';
+              } else {
+                qtyStr = `${Math.round(item.totalQty)} ${item.unit || 'un'}(s)`;
+              }
+              text += `• ${qtyStr} - ${item.name} (${item.orderCount} pedido${item.orderCount > 1 ? 's' : ''})\n`;
+            });
+          }
+
+          if (totalAllEggs > 0) {
+            const totalTraysStr = Number.isInteger(totalAllTrays15) 
+              ? Math.round(totalAllTrays15) 
+              : totalAllTrays15.toFixed(1);
+            text += `------------------------------------\n`;
+            text += `🥚 *TOTAL GERAL DE OVOS:* ${totalTraysStr} bandeja(s) de 15 (${totalAllEggs} ovos no total)\n`;
+          }
+
+          if (navigator.clipboard) {
+            navigator.clipboard.writeText(text);
+            setItemReportCopied(true);
+            setTimeout(() => setItemReportCopied(false), 2500);
+            addToast('Relatório copiado para a área de transferência!', 'success');
+          }
+        };
+
+        return (
+          <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl w-full max-w-xl shadow-2xl p-6 space-y-4 max-h-[90vh] flex flex-col">
+              {/* Header */}
+              <div className="flex items-start justify-between pb-3 border-b border-slate-100">
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 bg-indigo-50 text-indigo-600 rounded-xl">
+                    <ClipboardList className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-slate-800 text-lg">Total de Itens dos Pedidos</h3>
+                    <p className="text-xs text-slate-500">Resumo consolidado de produtos para separação e estoque</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowItemReportModal(false)}
+                  className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Filter Sub-nav inside Modal */}
+              <div className="flex flex-wrap gap-1.5 p-1 bg-slate-100 rounded-xl text-xs">
+                <button
+                  onClick={() => setItemReportFilter('current')}
+                  className={`px-3 py-1.5 rounded-lg font-semibold transition ${itemReportFilter === 'current' ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
+                >
+                  Filtro Atual ({filteredCurrentOrders.length})
+                </button>
+                <button
+                  onClick={() => setItemReportFilter('pending')}
+                  className={`px-3 py-1.5 rounded-lg font-semibold transition ${itemReportFilter === 'pending' ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
+                >
+                  Pendentes ({orders.filter(o => o.status !== 'delivered' && !o.is_assembled).length})
+                </button>
+                <button
+                  onClick={() => setItemReportFilter('assembled')}
+                  className={`px-3 py-1.5 rounded-lg font-semibold transition ${itemReportFilter === 'assembled' ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
+                >
+                  Montados ({orders.filter(o => o.status !== 'delivered' && o.is_assembled).length})
+                </button>
+                <button
+                  onClick={() => setItemReportFilter('delivered')}
+                  className={`px-3 py-1.5 rounded-lg font-semibold transition ${itemReportFilter === 'delivered' ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
+                >
+                  Entregues ({orders.filter(o => o.status === 'delivered').length})
+                </button>
+                <button
+                  onClick={() => setItemReportFilter('all')}
+                  className={`px-3 py-1.5 rounded-lg font-semibold transition ${itemReportFilter === 'all' ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
+                >
+                  Todos ({orders.filter(o => o.status !== 'cancelled').length})
+                </button>
+              </div>
+
+              {/* Items List Content */}
+              <div className="flex-1 overflow-y-auto pr-1 space-y-2 max-h-[50vh]">
+                {aggregatedList.length === 0 ? (
+                  <div className="py-12 text-center text-slate-400">
+                    <Package className="w-10 h-10 mx-auto mb-2 text-slate-300" />
+                    <p className="text-sm font-semibold text-slate-600">Nenhum item para os pedidos deste filtro.</p>
+                  </div>
+                ) : (
+                  <div className="divide-y divide-slate-100">
+                    {aggregatedList.map((item, idx) => {
+                      const eggInfo = getEggTrayDetails(item.name, item.totalQty);
+                      let qtyFormatted = '';
+                      if (eggInfo) {
+                        const traysStr = eggInfo.isInteger15 
+                          ? Math.round(eggInfo.trays15) 
+                          : eggInfo.trays15.toFixed(1);
+                        qtyFormatted = `${traysStr} bandeja(s) de 15`;
+                      } else if (item.unit === 'kg') {
+                        qtyFormatted = item.totalQty.toLocaleString('pt-BR', { minimumFractionDigits: 3, maximumFractionDigits: 3 }) + ' kg';
+                      } else {
+                        qtyFormatted = `${Math.round(item.totalQty)} ${item.unit || 'un'}(s)`;
+                      }
+
+                      return (
+                        <div key={idx} className="py-2.5 flex items-center justify-between gap-4">
+                          <div>
+                            <p className="font-bold text-slate-800 text-sm">{item.name}</p>
+                            <p className="text-xxs text-slate-400 font-medium">
+                              Presente em {item.orderCount} pedido(s)
+                              {eggInfo && ` • Total: ${eggInfo.totalEggs} ovos (${Math.round(item.totalQty)} un do item)`}
+                            </p>
+                          </div>
+                          <div className="text-right">
+                            <span className="inline-block px-3 py-1 bg-indigo-50 text-indigo-700 font-bold text-sm rounded-lg border border-indigo-100/60 font-mono">
+                              {qtyFormatted}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Modal Footer */}
+              <div className="pt-3 border-t border-slate-100 flex items-center justify-between gap-3">
+                <div className="text-xs text-slate-500 font-medium">
+                  <div><strong>{aggregatedList.length}</strong> tipo(s) de produto em <strong>{targetOrders.length}</strong> pedido(s)</div>
+                  {totalAllEggs > 0 && (
+                    <div className="text-indigo-600 font-bold mt-0.5">
+                      🥚 Total em Ovos: {Number.isInteger(totalAllTrays15) ? Math.round(totalAllTrays15) : totalAllTrays15.toFixed(1)} bandeja(s) de 15 ({totalAllEggs} ovos)
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleCopyTextReport}
+                    disabled={aggregatedList.length === 0}
+                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-semibold rounded-xl text-xs transition shadow-sm flex items-center gap-1.5"
+                  >
+                    {itemReportCopied ? <Check className="w-4 h-4 text-emerald-300" /> : <Copy className="w-4 h-4" />}
+                    {itemReportCopied ? 'Copiado!' : 'Copiar Resumo'}
+                  </button>
+                  <button
+                    onClick={() => setShowItemReportModal(false)}
+                    className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-xl text-xs transition"
+                  >
+                    Fechar
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* MODAL: ADMIN EDIT CUSTOMER */}
       {editingCustomer && (

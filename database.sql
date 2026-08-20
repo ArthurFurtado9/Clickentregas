@@ -15,8 +15,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
-REVOKE ALL ON FUNCTION private.get_admin_password_hash() FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION private.get_admin_password_hash() TO service_role, postgres;
+GRANT EXECUTE ON FUNCTION private.get_admin_password_hash() TO anon, authenticated, service_role, postgres;
 
 -- Recalcula o subtotal, descontos e total de um pedido no servidor (Gatilho interno)
 CREATE OR REPLACE FUNCTION private.recalculate_order_total()
@@ -75,8 +74,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
-REVOKE ALL ON FUNCTION private.recalculate_order_total() FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION private.recalculate_order_total() TO service_role, postgres;
+GRANT EXECUTE ON FUNCTION private.recalculate_order_total() TO anon, authenticated, service_role, postgres;
 
 -- ─── 3. REMOÇÃO DAS FUNÇÕES DO ESQUEMA PÚBLICO E GATILHOS ANTIGOS ───
 DROP FUNCTION IF EXISTS public.recalculate_order_total() CASCADE;

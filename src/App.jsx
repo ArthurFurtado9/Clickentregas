@@ -3,7 +3,7 @@ import {
   ShoppingBag, ShoppingCart, Trash2, Plus, Minus, Check, Truck, 
   Settings, LogOut, Package, Edit, MapPin, User, Phone, ArrowLeft, 
   Search, FileText, X, ChevronRight, Info, ExternalLink, RefreshCw, PlusCircle, Calendar,
-  Star, Scale, CheckSquare, Square, TrendingUp, DollarSign, Undo2, MessageSquare, Tag, Users, ClipboardList, Copy, Bell, SlidersHorizontal, Sparkles, Egg, Layers, ReceiptText, Eye, EyeOff
+  Star, Scale, CheckSquare, Square, TrendingUp, DollarSign, Undo2, MessageSquare, Tag, Users, ClipboardList, Copy, Bell, SlidersHorizontal, Sparkles, Egg, Layers, ReceiptText, Eye, EyeOff, Key, Lock
 } from 'lucide-react'
 import { supabase, isSupabaseConfigured, updateSupabaseHeaders } from './supabaseClient'
 
@@ -44,6 +44,58 @@ const hashPassword = async (password) => {
   const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer)
   const hashArray = Array.from(new Uint8Array(hashBuffer))
   return hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
+const hashClientPassword = async (password, phone) => {
+  const cleanPhone = (phone || '').toString().replace(/\D/g, '')
+  const salt = `clickentregas_client_${cleanPhone}_sec_2026`
+  const msgBuffer = new TextEncoder().encode(password + salt)
+  const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer)
+  const hashArray = Array.from(new Uint8Array(hashBuffer))
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
+const SECURITY_QUESTIONS = [
+  "Qual é o nome da sua mãe?",
+  "Qual é a sua cor favorita?",
+  "Qual foi o modelo do seu primeiro carro ou moto?",
+  "Qual é a sua cidade natal?",
+  "Qual é o nome do seu primeiro animal de estimação?",
+  "Qual é o seu prato ou comida favorita?",
+  "Qual é o nome da sua primeira escola?"
+]
+
+const normalizeAnswer = (text) => {
+  if (!text || typeof text !== 'string') return ''
+  return text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+}
+
+const parseCustomerSecurity = (customer) => {
+  if (!customer) return customer
+  let secQ = customer.security_question
+  let secA = customer.security_answer_hash
+
+  if ((!secQ || !secA) && customer.recovery_code && typeof customer.recovery_code === 'string') {
+    if (customer.recovery_code.startsWith('SEC:')) {
+      try {
+        const parsed = JSON.parse(customer.recovery_code.slice(4))
+        if (parsed.q) secQ = parsed.q
+        if (parsed.a) secA = parsed.a
+      } catch (err) {
+        console.warn('Erro ao parsear recovery_code SEC:', err)
+      }
+    }
+  }
+
+  return {
+    ...customer,
+    security_question: secQ || customer.security_question || null,
+    security_answer_hash: secA || customer.security_answer_hash || null
+  }
 }
 
 const sanitizeErrorMessage = (err) => {
@@ -110,8 +162,48 @@ function App() {
   // Catalog State
   const [products, setProducts] = useState([])
   const [searchQuery, setSearchQuery] = useState('')
-  const [cart, setCart] = useState([]) // [ { product, quantity } ]
+  const [cart, setCart] = useState(() => {
+    try {
+      const saved = localStorage.getItem('clickentregas_cart')
+      return saved ? JSON.parse(saved) : []
+    } catch {
+      return []
+    }
+  })
   const [showCartModal, setShowCartModal] = useState(false)
+
+  // Persistir carrinho no localStorage para não perder ao recarregar a página
+  useEffect(() => {
+    try {
+      if (cart && cart.length > 0) {
+        localStorage.setItem('clickentregas_cart', JSON.stringify(cart))
+      } else {
+        localStorage.removeItem('clickentregas_cart')
+      }
+    } catch (e) {
+      console.error('Erro ao persistir carrinho no localStorage:', e)
+    }
+  }, [cart])
+
+  // Restaurar carrinho salvo no perfil caso o carrinho local esteja vazio
+  useEffect(() => {
+    if (user && user.active_cart && Array.isArray(user.active_cart) && user.active_cart.length > 0) {
+      setCart((currentCart) => {
+        if (currentCart && currentCart.length > 0) return currentCart
+        return user.active_cart.map(item => ({
+          product: {
+            id: item.id || item.product_id,
+            name: item.name,
+            price: item.price,
+            unit: item.unit,
+            image_url: item.image_url,
+            is_approximate: item.is_approximate
+          },
+          quantity: item.quantity
+        }))
+      })
+    }
+  }, [user?.id])
 
   // Client Orders History State
   const [clientOrders, setClientOrders] = useState([])
@@ -186,8 +278,47 @@ function App() {
   const [adminCustomers, setAdminCustomers] = useState([])
   const [whatsappTemplate, setWhatsappTemplate] = useState('')
   const [whatsappTemplateNoCharge, setWhatsappTemplateNoCharge] = useState('')
+  const [whatsappAbandonedCartTemplate, setWhatsappAbandonedCartTemplate] = useState('')
   const [whatHappensNowText, setWhatHappensNowText] = useState('')
   const [pixMessageTemplate, setPixMessageTemplate] = useState('')
+  const [smsApiKey, setSmsApiKey] = useState('textbelt')
+  const [whatsappApiUrl, setWhatsappApiUrl] = useState('')
+  const [whatsappApiToken, setWhatsappApiToken] = useState('')
+
+  // Client Security & Password States
+  const [clientPasswordInput, setClientPasswordInput] = useState('')
+  const [clientPasswordConfirmInput, setClientPasswordConfirmInput] = useState('')
+  const [showClientPassword, setShowClientPassword] = useState(false)
+  const [showClientPasswordConfirm, setShowClientPasswordConfirm] = useState(false)
+  const [securityQuestionInput, setSecurityQuestionInput] = useState(SECURITY_QUESTIONS[0])
+  const [securityAnswerInput, setSecurityAnswerInput] = useState('')
+  const [clientLoginPasswordInput, setClientLoginPasswordInput] = useState('')
+  const [showClientLoginPassword, setShowClientLoginPassword] = useState(false)
+  const [clientPasswordPromptNeeded, setClientPasswordPromptNeeded] = useState(false)
+  const [clientLegacySetupNeeded, setClientLegacySetupNeeded] = useState(false)
+  const [clientSecuritySetupNeeded, setClientSecuritySetupNeeded] = useState(false)
+  const [clientFoundCustomer, setClientFoundCustomer] = useState(null)
+
+  // Forgot Password / Recovery States (Security Question Verification)
+  const [showForgotPasswordModal, setShowForgotPasswordModal] = useState(false)
+  const [forgotPasswordStep, setForgotPasswordStep] = useState('answer') // 'answer' | 'new_password'
+  const [forgotPasswordAnswerInput, setForgotPasswordAnswerInput] = useState('')
+  const [forgotPasswordNewPassword, setForgotPasswordNewPassword] = useState('')
+  const [forgotPasswordConfirmPassword, setForgotPasswordConfirmPassword] = useState('')
+  const [showForgotNewPassword, setShowForgotNewPassword] = useState(false)
+  const [showForgotConfirmPassword, setShowForgotConfirmPassword] = useState(false)
+
+  // Change Password in Profile States
+  const [showChangePasswordModal, setShowChangePasswordModal] = useState(false)
+  const [currentPasswordInput, setCurrentPasswordInput] = useState('')
+  const [newPasswordInput, setNewPasswordInput] = useState('')
+  const [newPasswordConfirmInput, setNewPasswordConfirmInput] = useState('')
+  const [showCurrentPassword, setShowCurrentPassword] = useState(false)
+  const [showNewPassword, setShowNewPassword] = useState(false)
+  const [showNewPasswordConfirm, setShowNewPasswordConfirm] = useState(false)
+  const [showChangeSecurityQuestionModal, setShowChangeSecurityQuestionModal] = useState(false)
+  const [profileSecurityQuestion, setProfileSecurityQuestion] = useState(SECURITY_QUESTIONS[0])
+  const [profileSecurityAnswer, setProfileSecurityAnswer] = useState('')
   const [adminPhone, setAdminPhone] = useState(() => localStorage.getItem('clickentregas_admin_phone') || ADMIN_PHONE)
   const [adminName, setAdminName] = useState(() => localStorage.getItem('clickentregas_admin_name') || 'Bruno (Dono)')
   const [adminPasswordSetupNeeded, setAdminPasswordSetupNeeded] = useState(false)
@@ -227,7 +358,8 @@ function App() {
   const [showItemReportModal, setShowItemReportModal] = useState(false)
   const [itemReportFilter, setItemReportFilter] = useState('current') // 'current' | 'pending' | 'assembled' | 'delivered' | 'all'
   const [itemReportCopied, setItemReportCopied] = useState(false)
-  const [clientCategory, setClientCategory] = useState('all') // 'all' | 'ovos' | 'laticinios' | 'doces' | 'kg'
+  const [abandonedCartFilter, setAbandonedCartFilter] = useState('all') // 'all' | '15min'
+  const [abandonedCartSearch, setAbandonedCartSearch] = useState('')
   
   // Weight Popup and Ratings States
   const [showWeightModal, setShowWeightModal] = useState(false)
@@ -660,6 +792,10 @@ function App() {
         if (wtnc) setWhatsappTemplateNoCharge(wtnc.value)
         else setWhatsappTemplateNoCharge('Olá {nome}! Seu pedido #{pedido_id} foi entregue. Agradecemos a preferência!')
 
+        const wtac = data.find(item => item.key === 'whatsapp_abandoned_cart_template')
+        if (wtac) setWhatsappAbandonedCartTemplate(wtac.value)
+        else setWhatsappAbandonedCartTemplate('Olá {nome}! Tudo bem?\n\nVi que você separou alguns itens especiais no carrinho da {loja}:\n\n{itens}\n\n*Total Estimado: R$ {total}*\n\nGostaria de ajuda para finalizar seu pedido? Qualquer dúvida estou à disposição! 😊')
+
         const pk = data.find(item => item.key === 'pix_key')
         if (pk) setPixKey(pk.value || '')
 
@@ -701,6 +837,15 @@ function App() {
         const pmt = data.find(item => item.key === 'pix_message_template')
         if (pmt) setPixMessageTemplate(pmt.value)
         else setPixMessageTemplate('Olá! Segue o link para pagamento do seu pedido #{pedido_id} via Pix no valor de R$ {total}. Link: {link_pagamento}')
+
+        const sak = data.find(item => item.key === 'sms_api_key')
+        if (sak) setSmsApiKey(sak.value || 'textbelt')
+
+        const wau = data.find(item => item.key === 'whatsapp_api_url')
+        if (wau) setWhatsappApiUrl(wau.value || '')
+
+        const wat = data.find(item => item.key === 'whatsapp_api_token')
+        if (wat) setWhatsappApiToken(wat.value || '')
 
         const ap = data.find(item => item.key === 'admin_phone')
         if (ap) {
@@ -940,7 +1085,7 @@ function App() {
         loadAdminCoupons()
       })
     }
-  }, [page, configured])
+  }, [page, configured, adminTab])
 
   // Realtime subscription for new orders (Admin)
   useEffect(() => {
@@ -1122,7 +1267,7 @@ function App() {
         supabase.rest.headers.set('x-client-phone', cleanPhone)
       }
       // Find customer
-      const { data: customer, error } = await supabase
+      const { data: rawCustomer, error } = await supabase
         .from('customers')
         .select('*')
         .eq('phone', cleanPhone)
@@ -1130,30 +1275,225 @@ function App() {
 
       if (error) throw error
 
+      const customer = parseCustomerSecurity(rawCustomer)
+
       if (customer) {
-        // Customer exists
-        const userObject = { ...customer, isAdmin: customer.phone === adminPhone }
-        setUser(userObject)
-        localStorage.setItem('clickentregas_user', JSON.stringify(userObject))
-        
-        setCep(customer.cep || '')
-        setStreet(customer.street || '')
-        setNeighborhood(customer.neighborhood || '')
-        setCity(customer.city || '')
-        setState(customer.state || '')
-        setNumber(customer.number || '')
-        setComplement(customer.complement || '')
-        
-        if (customer.phone === adminPhone) {
-          setPage('admin')
-        } else {
-          setClientTab('catalog')
-          setPage('catalog')
+        // If customer already has a password hash, prompt for password
+        if (customer.password_hash) {
+          setClientFoundCustomer(customer)
+          setClientLoginPasswordInput('')
+          setClientPasswordPromptNeeded(true)
+          setLoading(false)
+          return
         }
+
+        // Customer exists (legacy without password) - Offer creation of initial password
+        setClientFoundCustomer(customer)
+        setClientPasswordInput('')
+        setClientPasswordConfirmInput('')
+        setClientLegacySetupNeeded(true)
+        setLoading(false)
+        return
       } else {
-        // New customer, ask for name
+        // New customer, ask for name and password
         setIsNewUser(true)
+        setClientPasswordInput('')
+        setClientPasswordConfirmInput('')
       }
+    } catch (err) {
+      setAuthError(sanitizeErrorMessage(err))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Legacy Customer Password Setup Handler
+  const handleSaveLegacyCustomerPassword = async (e) => {
+    e.preventDefault()
+    if (!clientFoundCustomer) return
+    setAuthError('')
+    setLoading(true)
+
+    if (!clientPasswordInput || clientPasswordInput.length < 4) {
+      setAuthError('A nova senha deve ter no mínimo 4 caracteres.')
+      setLoading(false)
+      return
+    }
+
+    if (clientPasswordInput !== clientPasswordConfirmInput) {
+      setAuthError('A confirmação não coincide com a nova senha digitada.')
+      setLoading(false)
+      return
+    }
+
+    if (!securityAnswerInput.trim()) {
+      setAuthError('Por favor, informe a resposta para a sua pergunta secreta.')
+      setLoading(false)
+      return
+    }
+
+    try {
+      const cleanPhone = clientFoundCustomer.phone.replace(/\D/g, '')
+      const passwordHash = await hashClientPassword(clientPasswordInput, cleanPhone)
+      const answerHash = await hashClientPassword(normalizeAnswer(securityAnswerInput), cleanPhone)
+      const secPayload = 'SEC:' + JSON.stringify({ q: securityQuestionInput, a: answerHash })
+
+      if (supabase) {
+        supabase.rest.headers.set('x-client-phone', cleanPhone)
+      }
+
+      const { error } = await supabase
+        .from('customers')
+        .update({ 
+          password_hash: passwordHash,
+          recovery_code: secPayload
+        })
+        .eq('phone', cleanPhone)
+
+      if (error) {
+        console.warn('Aviso ao salvar senha e pergunta de segurança no Supabase:', error.message)
+      }
+
+      const userObject = { 
+        ...clientFoundCustomer, 
+        password_hash: passwordHash, 
+        security_question: securityQuestionInput,
+        security_answer_hash: answerHash,
+        recovery_code: secPayload,
+        isAdmin: false 
+      }
+      setUser(userObject)
+      localStorage.setItem('clickentregas_user', JSON.stringify(userObject))
+
+      setCep(clientFoundCustomer.cep || '')
+      setStreet(clientFoundCustomer.street || '')
+      setNeighborhood(clientFoundCustomer.neighborhood || '')
+      setCity(clientFoundCustomer.city || '')
+      setState(clientFoundCustomer.state || '')
+      setNumber(clientFoundCustomer.number || '')
+      setComplement(clientFoundCustomer.complement || '')
+
+      setClientLegacySetupNeeded(false)
+      setClientPasswordInput('')
+      setClientPasswordConfirmInput('')
+      setSecurityAnswerInput('')
+      setClientTab('catalog')
+      setPage('catalog')
+      addToast('Senha e pergunta de segurança cadastradas!', 'success')
+    } catch (err) {
+      setAuthError(sanitizeErrorMessage(err))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Client Password Login handler
+  const handleClientPasswordLogin = async (e) => {
+    e.preventDefault()
+    if (!clientFoundCustomer) return
+    setAuthError('')
+    setLoading(true)
+
+    try {
+      if (!clientLoginPasswordInput) {
+        setAuthError('Por favor, insira sua senha de acesso.')
+        setLoading(false)
+        return
+      }
+
+      const inputHash = await hashClientPassword(clientLoginPasswordInput, clientFoundCustomer.phone)
+      if (inputHash !== clientFoundCustomer.password_hash) {
+        setAuthError('Senha incorreta. Verifique a senha ou use "Esqueci minha senha".')
+        setLoading(false)
+        return
+      }
+
+      const customer = parseCustomerSecurity(clientFoundCustomer)
+      const userObject = { ...customer, isAdmin: false }
+      setUser(userObject)
+      localStorage.setItem('clickentregas_user', JSON.stringify(userObject))
+
+      setCep(customer.cep || '')
+      setStreet(customer.street || '')
+      setNeighborhood(customer.neighborhood || '')
+      setCity(customer.city || '')
+      setState(customer.state || '')
+      setNumber(customer.number || '')
+      setComplement(customer.complement || '')
+
+      // If customer does not have a security question registered yet, prompt them to configure it now
+      if (!customer.security_question || !customer.security_answer_hash) {
+        setClientPasswordPromptNeeded(false)
+        setClientSecuritySetupNeeded(true)
+        setLoading(false)
+        return
+      }
+
+      setClientPasswordPromptNeeded(false)
+      setClientLoginPasswordInput('')
+      setClientTab('catalog')
+      setPage('catalog')
+    } catch (err) {
+      setAuthError(sanitizeErrorMessage(err))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Save Security Question for existing customer on next login
+  const handleSaveClientSecurityQuestion = async (e) => {
+    e.preventDefault()
+    if (!user && !clientFoundCustomer) return
+    const target = user || clientFoundCustomer
+    const cleanPhone = (target.phone || phoneInput).replace(/\D/g, '')
+
+    if (!securityAnswerInput.trim()) {
+      setAuthError('Por favor, informe a resposta para a sua pergunta secreta.')
+      return
+    }
+
+    setLoading(true)
+    setAuthError('')
+    try {
+      const answerHash = await hashClientPassword(normalizeAnswer(securityAnswerInput), cleanPhone)
+      const secPayload = 'SEC:' + JSON.stringify({ q: securityQuestionInput, a: answerHash })
+
+      if (supabase) {
+        supabase.rest.headers.set('x-client-phone', cleanPhone)
+      }
+
+      const { data, error } = await supabase
+        .from('customers')
+        .update({
+          recovery_code: secPayload
+        })
+        .eq('phone', cleanPhone)
+        .select()
+        .single()
+
+      if (error) {
+        console.warn('Aviso ao salvar pergunta de segurança no Supabase:', error.message)
+      }
+
+      const updatedUser = { 
+        ...target, 
+        ...(data || {}), 
+        security_question: securityQuestionInput, 
+        security_answer_hash: answerHash, 
+        recovery_code: secPayload,
+        isAdmin: false 
+      }
+      setUser(updatedUser)
+      setClientFoundCustomer(updatedUser)
+      localStorage.setItem('clickentregas_user', JSON.stringify(updatedUser))
+
+      setClientSecuritySetupNeeded(false)
+      setSecurityAnswerInput('')
+      setClientPasswordPromptNeeded(false)
+      setClientLoginPasswordInput('')
+      setClientTab('catalog')
+      setPage('catalog')
+      addToast('Pergunta secreta cadastrada com sucesso!', 'success')
     } catch (err) {
       setAuthError(sanitizeErrorMessage(err))
     } finally {
@@ -1175,28 +1515,62 @@ function App() {
       return
     }
 
+    if (!clientPasswordInput || clientPasswordInput.length < 4) {
+      setAuthError('A senha deve ter no mínimo 4 caracteres.')
+      setLoading(false)
+      return
+    }
+
+    if (clientPasswordInput !== clientPasswordConfirmInput) {
+      setAuthError('A confirmação da senha não coincide com a nova senha digitada.')
+      setLoading(false)
+      return
+    }
+
+    if (!securityAnswerInput.trim()) {
+      setAuthError('Por favor, responda a pergunta de segurança para recuperação da conta.')
+      setLoading(false)
+      return
+    }
+
     const cleanPhone = phoneInput.replace(/\D/g, '')
 
     try {
       if (supabase) {
         supabase.rest.headers.set('x-client-phone', cleanPhone)
       }
+
+      const passwordHash = await hashClientPassword(clientPasswordInput, cleanPhone)
+      const answerHash = await hashClientPassword(normalizeAnswer(securityAnswerInput), cleanPhone)
+      const secPayload = 'SEC:' + JSON.stringify({ q: securityQuestionInput, a: answerHash })
+
       const { data, error } = await supabase
         .from('customers')
         .insert([{ 
           name: nameCleaned, 
-          phone: cleanPhone
+          phone: cleanPhone,
+          password_hash: passwordHash,
+          recovery_code: secPayload
         }])
         .select()
         .single()
 
       if (error) throw error
 
-      const userObject = { ...data, isAdmin: false }
+      const userObject = { 
+        ...data, 
+        security_question: securityQuestionInput, 
+        security_answer_hash: answerHash, 
+        recovery_code: secPayload,
+        isAdmin: false 
+      }
       setUser(userObject)
       localStorage.setItem('clickentregas_user', JSON.stringify(userObject))
       
       setIsNewUser(false)
+      setClientPasswordInput('')
+      setClientPasswordConfirmInput('')
+      setSecurityAnswerInput('')
       setClientTab('catalog')
       setPage('catalog')
       addToast('Cadastro realizado com sucesso!', 'success')
@@ -1204,6 +1578,232 @@ function App() {
       setAuthError(sanitizeErrorMessage(err))
     } finally {
       setLoading(false)
+    }
+  }
+
+  // Forgot Password / Recovery Handler: Security Question Verification
+  const handleStartForgotPassword = async () => {
+    const clean = (clientFoundCustomer?.phone || phoneInput).replace(/\D/g, '')
+    if (!clean || !validatePhone(clean)) {
+      setAuthError('Por favor, insira um número de telefone válido com DDD para recuperar a senha.')
+      return
+    }
+
+    setLoading(true)
+    setAuthError('')
+    try {
+      if (supabase) {
+        supabase.rest.headers.set('x-client-phone', clean)
+      }
+
+      // Sempre busca os dados mais atualizados do cliente no banco para garantir a pergunta exata
+      const { data: rawCust, error: findErr } = await supabase
+        .from('customers')
+        .select('*')
+        .eq('phone', clean)
+        .maybeSingle()
+
+      if (findErr) throw findErr
+      if (!rawCust) {
+        setAuthError('Nenhum cadastro encontrado para o telefone ' + getFormattedPhone(clean) + '.')
+        setLoading(false)
+        return
+      }
+
+      const foundCust = parseCustomerSecurity(rawCust)
+      setClientFoundCustomer(foundCust)
+      setForgotPasswordStep('answer')
+      setForgotPasswordAnswerInput('')
+      setForgotPasswordNewPassword('')
+      setForgotPasswordConfirmPassword('')
+      setShowForgotPasswordModal(true)
+    } catch (err) {
+      setAuthError(sanitizeErrorMessage(err))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleVerifySecurityAnswer = async (e) => {
+    e.preventDefault()
+    if (!clientFoundCustomer) return
+    const targetPhone = clientFoundCustomer.phone.replace(/\D/g, '')
+
+    if (!forgotPasswordAnswerInput.trim()) {
+      showAlert('Campo Obrigatório', 'Por favor, informe a resposta para validação.')
+      return
+    }
+
+    if (clientFoundCustomer.security_answer_hash) {
+      const inputHash = await hashClientPassword(normalizeAnswer(forgotPasswordAnswerInput), targetPhone)
+      if (inputHash !== clientFoundCustomer.security_answer_hash) {
+        showAlert('Resposta Incorreta', 'A resposta informada para a pergunta secreta está incorreta. Verifique e tente novamente.')
+        return
+      }
+    } else {
+      // Caso cliente legado não tenha cadastrado pergunta ainda, valida o nome completo cadastrado
+      const inputNorm = normalizeAnswer(forgotPasswordAnswerInput)
+      const nameNorm = normalizeAnswer(clientFoundCustomer.name || '')
+      if (!inputNorm || (inputNorm !== nameNorm && !nameNorm.includes(inputNorm))) {
+        showAlert('Nome Incorreto', 'O nome digitado não confere com o cadastro da conta. Tente novamente.')
+        return
+      }
+    }
+
+    setForgotPasswordStep('new_password')
+  }
+
+  const handleConfirmResetPassword = async (e) => {
+    e.preventDefault()
+    setAuthError('')
+
+    if (!forgotPasswordNewPassword || forgotPasswordNewPassword.length < 4) {
+      showAlert('Senha Curta', 'A nova senha deve ter no mínimo 4 caracteres.')
+      return
+    }
+
+    if (forgotPasswordNewPassword !== forgotPasswordConfirmPassword) {
+      showAlert('Senhas Não Coincidem', 'A confirmação de senha não coincide com a nova senha digitada.')
+      return
+    }
+
+    setLoading(true)
+    const targetPhone = clientFoundCustomer?.phone || phoneInput.replace(/\D/g, '')
+    try {
+      const newHash = await hashClientPassword(forgotPasswordNewPassword, targetPhone)
+      if (supabase) {
+        supabase.rest.headers.set('x-client-phone', targetPhone)
+      }
+
+      const { data, error } = await supabase
+        .from('customers')
+        .update({
+          password_hash: newHash,
+          recovery_code: null,
+          recovery_expires: null
+        })
+        .eq('phone', targetPhone)
+        .select()
+        .single()
+
+      if (error) throw error
+
+      const userObject = { ...(data || clientFoundCustomer), password_hash: newHash, isAdmin: false }
+      setUser(userObject)
+      localStorage.setItem('clickentregas_user', JSON.stringify(userObject))
+
+      setShowForgotPasswordModal(false)
+      setClientPasswordPromptNeeded(false)
+      setClientLoginPasswordInput('')
+      setClientTab('catalog')
+      setPage('catalog')
+      addToast('Senha redefinida com sucesso!', 'success')
+    } catch (err) {
+      showAlert('Erro ao Redefinir Senha', sanitizeErrorMessage(err))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Change Password in Profile Handler
+  const handleChangePasswordInProfile = async (e) => {
+    e.preventDefault()
+    if (!user) return
+
+    if (user.password_hash) {
+      const currentHash = await hashClientPassword(currentPasswordInput, user.phone)
+      if (currentHash !== user.password_hash) {
+        showAlert('Senha Atual Incorreta', 'A senha atual digitada está incorreta.')
+        return
+      }
+    }
+
+    if (!newPasswordInput || newPasswordInput.length < 4) {
+      showAlert('Senha Curta', 'A nova senha deve ter no mínimo 4 caracteres.')
+      return
+    }
+
+    if (newPasswordInput !== newPasswordConfirmInput) {
+      showAlert('Senhas Não Coincidem', 'A confirmação não coincide com a nova senha digitada.')
+      return
+    }
+
+    setAdminLoading(true)
+    try {
+      const newHash = await hashClientPassword(newPasswordInput, user.phone)
+      if (supabase) {
+        supabase.rest.headers.set('x-client-phone', user.phone)
+      }
+
+      const { error } = await supabase
+        .from('customers')
+        .update({ password_hash: newHash })
+        .eq('id', user.id)
+
+      if (error) throw error
+
+      const updatedUser = { ...user, password_hash: newHash }
+      setUser(updatedUser)
+      localStorage.setItem('clickentregas_user', JSON.stringify(updatedUser))
+
+      setShowChangePasswordModal(false)
+      setCurrentPasswordInput('')
+      setNewPasswordInput('')
+      setNewPasswordConfirmInput('')
+      addToast('Senha alterada com sucesso!', 'success')
+    } catch (err) {
+      showAlert('Erro ao Alterar Senha', sanitizeErrorMessage(err))
+    } finally {
+      setAdminLoading(false)
+    }
+  }
+
+  // Change Security Question in Profile Handler
+  const handleChangeSecurityQuestionInProfile = async (e) => {
+    e.preventDefault()
+    if (!user) return
+    const cleanPhone = (user.phone || '').replace(/\D/g, '')
+
+    if (!profileSecurityAnswer.trim()) {
+      showAlert('Campo Obrigatório', 'Por favor, informe a resposta para a sua nova pergunta secreta.')
+      return
+    }
+
+    setAdminLoading(true)
+    try {
+      const answerHash = await hashClientPassword(normalizeAnswer(profileSecurityAnswer), cleanPhone)
+      const secPayload = 'SEC:' + JSON.stringify({ q: profileSecurityQuestion, a: answerHash })
+
+      if (supabase) {
+        supabase.rest.headers.set('x-client-phone', cleanPhone)
+      }
+
+      const { data, error } = await supabase
+        .from('customers')
+        .update({ recovery_code: secPayload })
+        .eq('phone', cleanPhone)
+        .select()
+        .single()
+
+      if (error) throw error
+
+      const updatedUser = { 
+        ...user, 
+        ...(data || {}), 
+        security_question: profileSecurityQuestion, 
+        security_answer_hash: answerHash, 
+        recovery_code: secPayload 
+      }
+      setUser(updatedUser)
+      localStorage.setItem('clickentregas_user', JSON.stringify(updatedUser))
+
+      setShowChangeSecurityQuestionModal(false)
+      setProfileSecurityAnswer('')
+      addToast('Pergunta secreta alterada com sucesso!', 'success')
+    } catch (err) {
+      showAlert('Erro ao Alterar Pergunta Secreta', sanitizeErrorMessage(err))
+    } finally {
+      setAdminLoading(false)
     }
   }
 
@@ -1415,6 +2015,72 @@ function App() {
     return cart.some(item => item.product.is_approximate)
   }
 
+  // Sincronização automática do carrinho do cliente com o Supabase para rastreamento de carrinhos abandonados
+  useEffect(() => {
+    if (!configured || !user?.phone || user.isAdmin || isAdminImpersonating) return
+
+    const syncCartToDatabase = async () => {
+      try {
+        updateSupabaseHeaders()
+        if (cart.length > 0) {
+          const serializedCart = cart.map(item => ({
+            id: item.product.id,
+            name: item.product.name,
+            price: item.product.price,
+            unit: item.product.unit,
+            quantity: item.quantity,
+            image_url: item.product.image_url,
+            is_approximate: item.product.is_approximate
+          }))
+          const { error } = await supabase
+            .from('customers')
+            .update({ 
+              active_cart: serializedCart, 
+              cart_updated_at: new Date().toISOString() 
+            })
+            .eq('phone', user.phone)
+          
+          if (error) {
+            console.warn('Supabase active_cart sync notice:', error.message)
+          }
+        } else {
+          await supabase
+            .from('customers')
+            .update({ 
+              active_cart: null, 
+              cart_updated_at: null 
+            })
+            .eq('phone', user.phone)
+        }
+      } catch (err) {
+        console.warn('Sincronização de carrinho:', err.message)
+      }
+    }
+
+    const timer = setTimeout(syncCartToDatabase, 400)
+    return () => clearTimeout(timer)
+  }, [cart, user?.phone, configured, isAdminImpersonating])
+
+  const handleContactAbandonedCartCustomer = (customer) => {
+    if (!customer || !customer.phone || !customer.active_cart) return
+    const itemsList = customer.active_cart.map(i => `• ${i.quantity}x ${i.name}`).join('\n')
+    const totalEst = customer.active_cart.reduce((tot, i) => tot + (i.price * i.quantity), 0)
+    const formattedTotal = totalEst.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    const firstName = customer.name ? customer.name.split(' ')[0] : 'Cliente'
+    
+    let template = whatsappAbandonedCartTemplate || `Olá {nome}! Tudo bem?\n\nVi que você separou alguns itens especiais no carrinho da {loja}:\n\n{itens}\n\n*Total Estimado: R$ {total}*\n\nGostaria de ajuda para finalizar seu pedido? Qualquer dúvida estou à disposição! 😊`
+    
+    const msg = template
+      .replace(/{nome}/g, firstName)
+      .replace(/{loja}/g, clientBrandName || 'ClickEntregas')
+      .replace(/{itens}/g, itemsList)
+      .replace(/{total}/g, formattedTotal)
+      .replace(/{telefone}/g, getFormattedPhone(customer.phone))
+
+    const cleanPhone = customer.phone.replace(/\D/g, '')
+    window.open(`https://wa.me/55${cleanPhone}?text=${encodeURIComponent(msg)}`, '_blank')
+  }
+
   const openEditProfileModal = () => {
     setProfileForm({
       name: user?.name || '',
@@ -1623,7 +2289,19 @@ function App() {
         }
       }
 
+      // Clear active_cart on customer in Supabase
+      if (user?.phone) {
+        supabase
+          .from('customers')
+          .update({ active_cart: null, cart_updated_at: null })
+          .eq('phone', user.phone)
+          .then(() => {})
+          .catch(() => {})
+      }
+
       setCreatedOrderId(order.id)
+      setCart([])
+      localStorage.removeItem('clickentregas_cart')
       if (isAdminImpersonating) {
         loadAdminCustomers()
       }
@@ -2192,6 +2870,11 @@ function App() {
         .upsert({ key: 'whatsapp_template_no_charge', value: whatsappTemplateNoCharge, updated_at: new Date() })
       if (error1nc) throw error1nc
 
+      const { error: error1ac } = await supabase
+        .from('settings')
+        .upsert({ key: 'whatsapp_abandoned_cart_template', value: whatsappAbandonedCartTemplate, updated_at: new Date() })
+      if (error1ac) throw error1ac
+
       const { error: error2 } = await supabase
         .from('settings')
         .upsert({ key: 'pix_key', value: pixKey, updated_at: new Date() })
@@ -2226,6 +2909,21 @@ function App() {
         .from('settings')
         .upsert({ key: 'what_happens_now_text', value: whatHappensNowText, updated_at: new Date() })
       if (error8) throw error8
+
+      const { error: errorSms } = await supabase
+        .from('settings')
+        .upsert({ key: 'sms_api_key', value: smsApiKey, updated_at: new Date() })
+      if (errorSms) throw errorSms
+
+      const { error: errorWau } = await supabase
+        .from('settings')
+        .upsert({ key: 'whatsapp_api_url', value: whatsappApiUrl, updated_at: new Date() })
+      if (errorWau) throw errorWau
+
+      const { error: errorWat } = await supabase
+        .from('settings')
+        .upsert({ key: 'whatsapp_api_token', value: whatsappApiToken, updated_at: new Date() })
+      if (errorWat) throw errorWat
 
       const { error: error9 } = await supabase
         .from('settings')
@@ -2710,10 +3408,16 @@ function App() {
   // Logout
   const handleLogout = () => {
     setUser(null)
-    setCart([])
+    // Mantém o carrinho intacto mesmo ao deslogar
     setPhoneInput('')
     setNameInput('')
     setIsNewUser(false)
+    setClientPasswordPromptNeeded(false)
+    setClientLegacySetupNeeded(false)
+    setClientLoginPasswordInput('')
+    setClientPasswordInput('')
+    setClientPasswordConfirmInput('')
+    setClientFoundCustomer(null)
     setIsAdminImpersonating(false)
     setAdminProfile(null)
     localStorage.removeItem('clickentregas_user')
@@ -3326,6 +4030,78 @@ function App() {
                     </div>
                   </div>
 
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5 font-mono">Criar Senha de Acesso</label>
+                    <div className="relative">
+                      <input
+                        type={showClientPassword ? "text" : "password"}
+                        placeholder="Mínimo 4 caracteres"
+                        value={clientPasswordInput}
+                        onChange={(e) => setClientPasswordInput(e.target.value)}
+                        className={`w-full pl-4 pr-11 py-3 ${theme.inputBg} border ${theme.lightBorder} rounded-xl text-slate-800 focus:outline-none focus:ring-2 ${theme.focusRing} ${theme.focusBorder} transition font-medium`}
+                        required
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowClientPassword(!showClientPassword)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 text-slate-400 hover:text-slate-600 transition"
+                        title={showClientPassword ? "Ocultar senha" : "Ver senha"}
+                      >
+                        {showClientPassword ? <EyeOff className="w-4.5 h-4.5" /> : <Eye className="w-4.5 h-4.5" />}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5 font-mono">Confirmar Nova Senha</label>
+                    <div className="relative">
+                      <input
+                        type={showClientPasswordConfirm ? "text" : "password"}
+                        placeholder="Repita sua senha"
+                        value={clientPasswordConfirmInput}
+                        onChange={(e) => setClientPasswordConfirmInput(e.target.value)}
+                        className={`w-full pl-4 pr-11 py-3 ${theme.inputBg} border ${theme.lightBorder} rounded-xl text-slate-800 focus:outline-none focus:ring-2 ${theme.focusRing} ${theme.focusBorder} transition font-medium`}
+                        required
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowClientPasswordConfirm(!showClientPasswordConfirm)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 text-slate-400 hover:text-slate-600 transition"
+                        title={showClientPasswordConfirm ? "Ocultar senha" : "Ver senha"}
+                      >
+                        {showClientPasswordConfirm ? <EyeOff className="w-4.5 h-4.5" /> : <Eye className="w-4.5 h-4.5" />}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Pergunta de Segurança para Recuperação */}
+                  <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-3.5 space-y-3">
+                    <div>
+                      <label className="block text-xxs font-bold text-slate-600 uppercase tracking-wider mb-1 font-mono">Pergunta de Segurança (Para recuperar a senha)</label>
+                      <select
+                        value={securityQuestionInput}
+                        onChange={(e) => setSecurityQuestionInput(e.target.value)}
+                        className="w-full px-3 py-2.5 bg-white border border-slate-200 rounded-lg text-slate-800 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-amber-500/20"
+                      >
+                        {SECURITY_QUESTIONS.map((q, idx) => (
+                          <option key={idx} value={q}>{q}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-xxs font-bold text-slate-600 uppercase tracking-wider mb-1 font-mono">Sua Resposta Secreta</label>
+                      <input
+                        type="text"
+                        placeholder="Ex: Maria, Azul, Gol..."
+                        value={securityAnswerInput}
+                        onChange={(e) => setSecurityAnswerInput(e.target.value)}
+                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-slate-800 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-amber-500/20"
+                        required
+                      />
+                    </div>
+                  </div>
+
                   <button
                     type="submit"
                     disabled={loading}
@@ -3336,10 +4112,256 @@ function App() {
                   
                   <button
                     type="button"
-                    onClick={() => setIsNewUser(false)}
+                    onClick={() => {
+                      setIsNewUser(false)
+                      setAuthError('')
+                    }}
                     className={`w-full text-center text-xs ${theme.text} font-medium hover:underline py-1`}
                   >
                     Voltar
+                  </button>
+                </form>
+              ) : clientPasswordPromptNeeded ? (
+                <form onSubmit={handleClientPasswordLogin} className="space-y-4">
+                  <div className="bg-amber-50/70 border border-amber-200/80 rounded-xl p-3.5 flex items-center justify-between">
+                    <div>
+                      <span className="text-xxs uppercase font-bold text-amber-800 font-mono block">Cliente Cadastrado</span>
+                      <span className="text-sm font-bold text-slate-800 block">{clientFoundCustomer?.name}</span>
+                      <span className="text-xs text-slate-500 font-mono">{getFormattedPhone(clientFoundCustomer?.phone)}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setClientPasswordPromptNeeded(false)
+                        setAuthError('')
+                      }}
+                      className="text-xs text-amber-800 hover:underline font-semibold"
+                    >
+                      Trocar
+                    </button>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5 font-mono">Senha de Acesso</label>
+                    <div className="relative">
+                      <input
+                        type={showClientLoginPassword ? "text" : "password"}
+                        placeholder="Digite sua senha"
+                        value={clientLoginPasswordInput}
+                        onChange={(e) => setClientLoginPasswordInput(e.target.value)}
+                        className={`w-full pl-4 pr-11 py-3 ${theme.inputBg} border ${theme.lightBorder} rounded-xl text-slate-800 focus:outline-none focus:ring-2 ${theme.focusRing} ${theme.focusBorder} transition font-medium`}
+                        required
+                        autoFocus
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowClientLoginPassword(!showClientLoginPassword)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 text-slate-400 hover:text-slate-600 transition"
+                        title={showClientLoginPassword ? "Ocultar senha" : "Ver senha"}
+                      >
+                        {showClientLoginPassword ? <EyeOff className="w-4.5 h-4.5" /> : <Eye className="w-4.5 h-4.5" />}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      onClick={handleStartForgotPassword}
+                      className={`text-xs font-semibold ${theme.text} hover:underline`}
+                    >
+                      Esqueci minha senha
+                    </button>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={loading}
+                    className={`w-full py-3.5 text-white font-semibold rounded-xl transition shadow-md flex items-center justify-center gap-2 text-sm disabled:opacity-55 ${theme.shadowColor} ${theme.bg} ${theme.hoverBg}`}
+                  >
+                    {loading ? 'Entrando...' : 'Entrar no Catálogo'}
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setClientPasswordPromptNeeded(false)
+                      setAuthError('')
+                    }}
+                    className={`w-full text-center text-xs ${theme.text} font-medium hover:underline py-1`}
+                  >
+                    Voltar
+                  </button>
+                </form>
+              ) : clientLegacySetupNeeded ? (
+                <form onSubmit={handleSaveLegacyCustomerPassword} className="space-y-4">
+                  <div className="bg-amber-50/70 border border-amber-200/80 rounded-xl p-3.5 flex items-center justify-between">
+                    <div>
+                      <span className="text-xxs uppercase font-bold text-amber-800 font-mono block">Cliente Cadastrado</span>
+                      <span className="text-sm font-bold text-slate-800 block">{clientFoundCustomer?.name}</span>
+                      <span className="text-xs text-slate-500 font-mono">{getFormattedPhone(clientFoundCustomer?.phone)}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setClientLegacySetupNeeded(false)
+                        setAuthError('')
+                      }}
+                      className="text-xs text-amber-800 hover:underline font-semibold"
+                    >
+                      Trocar
+                    </button>
+                  </div>
+
+                  <div className="bg-indigo-50/80 border border-indigo-100 rounded-xl p-3 text-xs text-indigo-900 flex items-start gap-2">
+                    <Info className="w-4 h-4 text-indigo-600 shrink-0 mt-0.5" />
+                    <span>Crie sua senha de acesso e pergunta secreta para proteger sua conta e acessar seus pedidos.</span>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5 font-mono">Criar Senha de Acesso</label>
+                    <div className="relative">
+                      <input
+                        type={showClientPassword ? "text" : "password"}
+                        placeholder="Mínimo 4 caracteres"
+                        value={clientPasswordInput}
+                        onChange={(e) => setClientPasswordInput(e.target.value)}
+                        className={`w-full pl-4 pr-11 py-3 ${theme.inputBg} border ${theme.lightBorder} rounded-xl text-slate-800 focus:outline-none focus:ring-2 ${theme.focusRing} ${theme.focusBorder} transition font-medium`}
+                        required
+                        autoFocus
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowClientPassword(!showClientPassword)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 text-slate-400 hover:text-slate-600 transition"
+                        title={showClientPassword ? "Ocultar senha" : "Ver senha"}
+                      >
+                        {showClientPassword ? <EyeOff className="w-4.5 h-4.5" /> : <Eye className="w-4.5 h-4.5" />}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5 font-mono">Confirmar Nova Senha</label>
+                    <div className="relative">
+                      <input
+                        type={showClientPasswordConfirm ? "text" : "password"}
+                        placeholder="Repita a nova senha"
+                        value={clientPasswordConfirmInput}
+                        onChange={(e) => setClientPasswordConfirmInput(e.target.value)}
+                        className={`w-full pl-4 pr-11 py-3 ${theme.inputBg} border ${theme.lightBorder} rounded-xl text-slate-800 focus:outline-none focus:ring-2 ${theme.focusRing} ${theme.focusBorder} transition font-medium`}
+                        required
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowClientPasswordConfirm(!showClientPasswordConfirm)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 text-slate-400 hover:text-slate-600 transition"
+                        title={showClientPasswordConfirm ? "Ocultar senha" : "Ver senha"}
+                      >
+                        {showClientPasswordConfirm ? <EyeOff className="w-4.5 h-4.5" /> : <Eye className="w-4.5 h-4.5" />}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Pergunta de Segurança para Recuperação */}
+                  <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-3.5 space-y-3">
+                    <div>
+                      <label className="block text-xxs font-bold text-slate-600 uppercase tracking-wider mb-1 font-mono">Pergunta de Segurança (Para recuperar a senha)</label>
+                      <select
+                        value={securityQuestionInput}
+                        onChange={(e) => setSecurityQuestionInput(e.target.value)}
+                        className="w-full px-3 py-2.5 bg-white border border-slate-200 rounded-lg text-slate-800 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-amber-500/20"
+                      >
+                        {SECURITY_QUESTIONS.map((q, idx) => (
+                          <option key={idx} value={q}>{q}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-xxs font-bold text-slate-600 uppercase tracking-wider mb-1 font-mono">Sua Resposta Secreta</label>
+                      <input
+                        type="text"
+                        placeholder="Ex: Maria, Azul, Gol..."
+                        value={securityAnswerInput}
+                        onChange={(e) => setSecurityAnswerInput(e.target.value)}
+                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-slate-800 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-amber-500/20"
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={loading}
+                    className={`w-full py-3.5 text-white font-semibold rounded-xl transition shadow-md flex items-center justify-center gap-2 text-sm disabled:opacity-55 ${theme.shadowColor} ${theme.bg} ${theme.hoverBg}`}
+                  >
+                    {loading ? 'Salvando...' : 'Salvar Senha e Entrar'}
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setClientLegacySetupNeeded(false)
+                      setAuthError('')
+                    }}
+                    className={`w-full text-center text-xs ${theme.text} font-medium hover:underline py-1`}
+                  >
+                    Voltar
+                  </button>
+                </form>
+              ) : clientSecuritySetupNeeded ? (
+                <form onSubmit={handleSaveClientSecurityQuestion} className="space-y-4">
+                  <div className="bg-amber-50/70 border border-amber-200/80 rounded-xl p-3.5 flex items-center justify-between">
+                    <div>
+                      <span className="text-xxs uppercase font-bold text-amber-800 font-mono block">Segurança da Conta</span>
+                      <span className="text-sm font-bold text-slate-800 block">{user?.name || clientFoundCustomer?.name}</span>
+                      <span className="text-xs text-slate-500 font-mono">{getFormattedPhone(user?.phone || clientFoundCustomer?.phone || phoneInput)}</span>
+                    </div>
+                  </div>
+
+                  <div className="bg-indigo-50/80 border border-indigo-100 rounded-xl p-3 text-xs text-indigo-900 flex items-start gap-2">
+                    <Key className="w-4 h-4 text-indigo-600 shrink-0 mt-0.5" />
+                    <span>Cadastre sua pergunta e resposta secreta para recuperar seu acesso caso esqueça sua senha.</span>
+                  </div>
+
+                  <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-3.5 space-y-3">
+                    <div>
+                      <label className="block text-xxs font-bold text-slate-600 uppercase tracking-wider mb-1 font-mono">Escolha sua Pergunta de Segurança</label>
+                      <select
+                        value={securityQuestionInput}
+                        onChange={(e) => setSecurityQuestionInput(e.target.value)}
+                        className="w-full px-3 py-2.5 bg-white border border-slate-200 rounded-lg text-slate-800 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-amber-500/20"
+                      >
+                        {SECURITY_QUESTIONS.map((q, idx) => (
+                          <option key={idx} value={q}>{q}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-xxs font-bold text-slate-600 uppercase tracking-wider mb-1 font-mono">Sua Resposta Secreta</label>
+                      <input
+                        type="text"
+                        placeholder="Ex: Maria, Azul, Gol..."
+                        value={securityAnswerInput}
+                        onChange={(e) => setSecurityAnswerInput(e.target.value)}
+                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-slate-800 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-amber-500/20"
+                        required
+                        autoFocus
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={loading}
+                    className={`w-full py-3.5 text-white font-semibold rounded-xl transition shadow-md flex items-center justify-center gap-2 text-sm disabled:opacity-55 ${theme.shadowColor} ${theme.bg} ${theme.hoverBg}`}
+                  >
+                    {loading ? 'Salvando...' : 'Salvar Pergunta e Entrar'}
+                    <ChevronRight className="w-4 h-4" />
                   </button>
                 </form>
               ) : (
@@ -3364,14 +4386,152 @@ function App() {
                     disabled={loading}
                     className={`w-full py-3.5 text-white font-semibold rounded-xl transition shadow-md flex items-center justify-center gap-2 text-sm disabled:opacity-55 ${theme.shadowColor} ${theme.bg} ${theme.hoverBg}`}
                   >
-                    {loading ? 'Entrando...' : 'Verificar Cadastro'}
+                    {loading ? 'Entrando...' : 'Continuar'}
                     <ChevronRight className="w-4 h-4" />
                   </button>
+
+                  <div className="text-center pt-1">
+                    <button
+                      type="button"
+                      onClick={handleStartForgotPassword}
+                      className={`text-xs font-semibold ${theme.text} hover:underline`}
+                    >
+                      Esqueci minha senha
+                    </button>
+                  </div>
                 </form>
               )}
             </>
           )}
         </div>
+
+        {/* MODAL: FORGOT PASSWORD (SECURITY QUESTION RECOVERY) */}
+        {showForgotPasswordModal && (
+          <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl w-full max-w-sm shadow-2xl p-6 space-y-4 animate-scale-in text-center">
+              <div className="mx-auto w-12 h-12 bg-amber-50 text-amber-600 rounded-full flex items-center justify-center shadow-inner">
+                <Key className="w-6 h-6" />
+              </div>
+
+              <div className="space-y-1">
+                <h3 className="font-bold text-slate-800 text-base">Recuperação de Senha</h3>
+                <p className="text-xs text-slate-500 leading-relaxed">
+                  {forgotPasswordStep === 'answer' ? (
+                    <>Responda à sua pergunta secreta para redefinir a senha da conta <span className="font-bold text-slate-700">{getFormattedPhone(clientFoundCustomer?.phone || phoneInput)}</span>:</>
+                  ) : (
+                    <>Resposta confirmada com sucesso! Crie sua nova senha de acesso:</>
+                  )}
+                </p>
+              </div>
+
+              {forgotPasswordStep === 'answer' ? (
+                <form onSubmit={handleVerifySecurityAnswer} className="space-y-3.5 text-left pt-1">
+                  <div className="bg-amber-50/80 border border-amber-200/80 rounded-xl p-3.5">
+                    <span className="text-xxs font-bold text-amber-800 uppercase tracking-wider block font-mono">Pergunta Secreta:</span>
+                    <span className="text-xs font-bold text-slate-800 block mt-1">
+                      {clientFoundCustomer?.security_question || "Qual é o seu nome completo cadastrado na conta?"}
+                    </span>
+                  </div>
+
+                  <div>
+                    <label className="block text-xxs font-bold text-slate-500 uppercase tracking-wider mb-1 font-mono">Sua Resposta</label>
+                    <input
+                      type="text"
+                      placeholder={clientFoundCustomer?.security_question ? "Digite sua resposta secreta" : "Digite seu nome completo"}
+                      value={forgotPasswordAnswerInput}
+                      onChange={(e) => setForgotPasswordAnswerInput(e.target.value)}
+                      className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 focus:outline-none focus:ring-2 focus:ring-amber-500/20 text-xs font-medium"
+                      required
+                      autoFocus
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="w-full py-3 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl text-xs transition shadow-sm mt-2"
+                  >
+                    Validar Resposta
+                  </button>
+
+                  <div className="text-center pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setShowForgotPasswordModal(false)}
+                      className="text-slate-400 hover:text-slate-600 text-xs font-semibold"
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <form onSubmit={handleConfirmResetPassword} className="space-y-3.5 text-left pt-1">
+                  <div>
+                    <label className="block text-xxs font-bold text-slate-500 uppercase tracking-wider mb-1 font-mono">Nova Senha</label>
+                    <div className="relative">
+                      <input
+                        type={showForgotNewPassword ? "text" : "password"}
+                        placeholder="Mínimo 4 caracteres"
+                        value={forgotPasswordNewPassword}
+                        onChange={(e) => setForgotPasswordNewPassword(e.target.value)}
+                        className="w-full pl-3.5 pr-10 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 focus:outline-none focus:ring-2 focus:ring-amber-500/20 text-xs font-medium"
+                        required
+                        autoFocus
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowForgotNewPassword(!showForgotNewPassword)}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600"
+                        title={showForgotNewPassword ? "Ocultar" : "Ver"}
+                      >
+                        {showForgotNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xxs font-bold text-slate-500 uppercase tracking-wider mb-1 font-mono">Confirmar Nova Senha</label>
+                    <div className="relative">
+                      <input
+                        type={showForgotConfirmPassword ? "text" : "password"}
+                        placeholder="Repita a nova senha"
+                        value={forgotPasswordConfirmPassword}
+                        onChange={(e) => setForgotPasswordConfirmPassword(e.target.value)}
+                        className="w-full pl-3.5 pr-10 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 focus:outline-none focus:ring-2 focus:ring-amber-500/20 text-xs font-medium"
+                        required
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowForgotConfirmPassword(!showForgotConfirmPassword)}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600"
+                        title={showForgotConfirmPassword ? "Ocultar" : "Ver"}
+                      >
+                        {showForgotConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={loading}
+                    className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs transition shadow-sm disabled:opacity-50 mt-2"
+                  >
+                    {loading ? 'Salvando...' : 'Salvar Nova Senha e Entrar'}
+                  </button>
+
+                  <div className="text-center pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setShowForgotPasswordModal(false)}
+                      className="text-slate-400 hover:text-slate-600 text-xs font-semibold"
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     )
   }
@@ -4145,6 +5305,35 @@ function App() {
                     className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 focus:outline-none"
                   />
                 </div>
+
+                <div className="pt-2 border-t border-slate-100 space-y-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCurrentPasswordInput('')
+                      setNewPasswordInput('')
+                      setNewPasswordConfirmInput('')
+                      setShowChangePasswordModal(true)
+                    }}
+                    className="w-full py-2.5 px-3 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 rounded-xl text-xs font-bold transition flex items-center justify-center gap-2"
+                  >
+                    <Key className="w-4 h-4 text-amber-700" />
+                    <span>Alterar Senha de Acesso</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setProfileSecurityQuestion(user?.security_question || SECURITY_QUESTIONS[0])
+                      setProfileSecurityAnswer('')
+                      setShowChangeSecurityQuestionModal(true)
+                    }}
+                    className="w-full py-2.5 px-3 bg-indigo-50 hover:bg-indigo-100 text-indigo-900 border border-indigo-200 rounded-xl text-xs font-bold transition flex items-center justify-center gap-2"
+                  >
+                    <Lock className="w-4 h-4 text-indigo-700" />
+                    <span>Alterar Pergunta e Resposta Secreta</span>
+                  </button>
+                </div>
               </div>
 
               <div className="flex gap-3 pt-3 border-t border-slate-100">
@@ -4160,6 +5349,181 @@ function App() {
                   className={`flex-1 py-3 text-white font-semibold rounded-xl text-xs transition shadow-sm ${theme.bg} ${theme.hoverBg}`}
                 >
                   Salvar Cadastro
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
+
+        {/* MODAL: CHANGE PASSWORD (IN PROFILE) */}
+        {showChangePasswordModal && (
+          <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+            <form onSubmit={handleChangePasswordInProfile} className="bg-white rounded-2xl w-full max-w-sm shadow-2xl p-6 space-y-4 animate-scale-in">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                <h3 className="font-bold text-slate-800 text-base flex items-center gap-2">
+                  <Lock className="w-5 h-5 text-amber-600" />
+                  Alterar Senha de Acesso
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => setShowChangePasswordModal(false)}
+                  className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-400"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="space-y-3 text-xs">
+                {user?.password_hash && (
+                  <div>
+                    <label className="block text-xxs font-bold text-slate-500 uppercase tracking-wider mb-1 font-mono">Senha Atual</label>
+                    <div className="relative">
+                      <input
+                        type={showCurrentPassword ? "text" : "password"}
+                        placeholder="Digite sua senha atual"
+                        value={currentPasswordInput}
+                        onChange={(e) => setCurrentPasswordInput(e.target.value)}
+                        className="w-full pl-3.5 pr-10 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 focus:outline-none focus:ring-2 focus:ring-amber-500/20 font-medium"
+                        required
+                        autoFocus
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowCurrentPassword(!showCurrentPassword)}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600"
+                        title={showCurrentPassword ? "Ocultar" : "Ver"}
+                      >
+                        {showCurrentPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-xxs font-bold text-slate-500 uppercase tracking-wider mb-1 font-mono">Nova Senha</label>
+                  <div className="relative">
+                    <input
+                      type={showNewPassword ? "text" : "password"}
+                      placeholder="Mínimo 4 caracteres"
+                      value={newPasswordInput}
+                      onChange={(e) => setNewPasswordInput(e.target.value)}
+                      className="w-full pl-3.5 pr-10 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 focus:outline-none focus:ring-2 focus:ring-amber-500/20 font-medium"
+                      required
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowNewPassword(!showNewPassword)}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600"
+                      title={showNewPassword ? "Ocultar" : "Ver"}
+                    >
+                      {showNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xxs font-bold text-slate-500 uppercase tracking-wider mb-1 font-mono">Confirmar Nova Senha</label>
+                  <div className="relative">
+                    <input
+                      type={showNewPasswordConfirm ? "text" : "password"}
+                      placeholder="Repita a nova senha"
+                      value={newPasswordConfirmInput}
+                      onChange={(e) => setNewPasswordConfirmInput(e.target.value)}
+                      className="w-full pl-3.5 pr-10 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 focus:outline-none focus:ring-2 focus:ring-amber-500/20 font-medium"
+                      required
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowNewPasswordConfirm(!showNewPasswordConfirm)}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600"
+                      title={showNewPasswordConfirm ? "Ocultar" : "Ver"}
+                    >
+                      {showNewPasswordConfirm ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex gap-2 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setShowChangePasswordModal(false)}
+                  className="flex-1 py-2.5 border border-slate-200 hover:bg-slate-50 text-slate-500 font-semibold rounded-xl text-xs transition"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={adminLoading}
+                  className="flex-1 py-2.5 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl text-xs transition shadow-sm disabled:opacity-50"
+                >
+                  {adminLoading ? 'Salvando...' : 'Salvar Senha'}
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
+
+        {/* MODAL: CHANGE SECURITY QUESTION (IN PROFILE) */}
+        {showChangeSecurityQuestionModal && (
+          <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+            <form onSubmit={handleChangeSecurityQuestionInProfile} className="bg-white rounded-2xl w-full max-w-sm shadow-2xl p-6 space-y-4 animate-scale-in">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                <h3 className="font-bold text-slate-800 text-base flex items-center gap-2">
+                  <Key className="w-5 h-5 text-indigo-600" />
+                  Pergunta de Segurança
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => setShowChangeSecurityQuestionModal(false)}
+                  className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-400"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="space-y-3.5 text-xs">
+                <div>
+                  <label className="block text-xxs font-bold text-slate-500 uppercase tracking-wider mb-1 font-mono">Escolha a Pergunta</label>
+                  <select
+                    value={profileSecurityQuestion}
+                    onChange={(e) => setProfileSecurityQuestion(e.target.value)}
+                    className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 text-xs font-medium"
+                  >
+                    {SECURITY_QUESTIONS.map((q, idx) => (
+                      <option key={idx} value={q}>{q}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xxs font-bold text-slate-500 uppercase tracking-wider mb-1 font-mono">Nova Resposta Secreta</label>
+                  <input
+                    type="text"
+                    placeholder="Ex: Maria, Azul, Gol..."
+                    value={profileSecurityAnswer}
+                    onChange={(e) => setProfileSecurityAnswer(e.target.value)}
+                    className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 text-xs font-medium"
+                    required
+                    autoFocus
+                  />
+                </div>
+              </div>
+
+              <div className="flex gap-2 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setShowChangeSecurityQuestionModal(false)}
+                  className="flex-1 py-2.5 border border-slate-200 hover:bg-slate-50 text-slate-500 font-semibold rounded-xl text-xs transition"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={adminLoading}
+                  className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-xs transition shadow-sm disabled:opacity-50"
+                >
+                  {adminLoading ? 'Salvando...' : 'Salvar Pergunta'}
                 </button>
               </div>
             </form>
@@ -4714,6 +6078,8 @@ function App() {
               {adminTab === 'orders' && <><FileText className="w-4.5 h-4.5 text-indigo-400" /> Todos os Pedidos</>}
               {adminTab === 'products' && <><Package className="w-4.5 h-4.5 text-indigo-400" /> Gerenciar Produtos</>}
               {adminTab === 'customers' && <><User className="w-4.5 h-4.5 text-indigo-400" /> Clientes</>}
+              {adminTab === 'abandoned_carts' && <><ShoppingCart className="w-4.5 h-4.5 text-indigo-400" /> Carrinhos Não Finalizados</>}
+              {adminTab === 'coupons' && <><Tag className="w-4.5 h-4.5 text-indigo-400" /> Cupons de Desconto</>}
               {adminTab === 'settings' && <><Settings className="w-4.5 h-4.5 text-indigo-400" /> Configurações Msg</>}
               {adminTab === 'financeiro' && <><TrendingUp className="w-4.5 h-4.5 text-indigo-400" /> Financeiro</>}
               {adminTab === 'customize' && <><Edit className="w-4.5 h-4.5 text-indigo-400" /> Editar Página</>}
@@ -4754,6 +6120,18 @@ function App() {
                 <span className="flex-1">Clientes</span>
                 {adminCustomers.some(c => c.profile_updated_pending) && (
                   <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse shrink-0" />
+                )}
+              </button>
+              <button
+                onClick={() => { setAdminTab('abandoned_carts'); setMobileAdminMenuOpen(false); }}
+                className={`w-full py-3 px-4.5 text-left font-semibold text-xs transition uppercase tracking-wider flex items-center gap-3 rounded-xl ${adminTab === 'abandoned_carts' ? 'bg-indigo-600 text-white shadow-md shadow-indigo-900/40' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}
+              >
+                <ShoppingCart className="w-4 h-4" />
+                <span className="flex-1">Carrinhos</span>
+                {adminCustomers.filter(c => c.active_cart && Array.isArray(c.active_cart) && c.active_cart.length > 0 && c.cart_updated_at && (Date.now() - new Date(c.cart_updated_at).getTime()) >= 15 * 60 * 1000).length > 0 && (
+                  <span className="px-2 py-0.5 bg-amber-500 text-white rounded-full text-xxs font-bold animate-pulse">
+                    {adminCustomers.filter(c => c.active_cart && Array.isArray(c.active_cart) && c.active_cart.length > 0 && c.cart_updated_at && (Date.now() - new Date(c.cart_updated_at).getTime()) >= 15 * 60 * 1000).length}
+                  </span>
                 )}
               </button>
               <button
@@ -4819,6 +6197,18 @@ function App() {
                 <span>Clientes</span>
                 {adminCustomers.some(c => c.profile_updated_pending) && (
                   <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse shrink-0" title="Novas atualizações de cadastro!" />
+                )}
+              </button>
+              <button
+                onClick={() => setAdminTab('abandoned_carts')}
+                className={`py-3.5 border-b-2 font-semibold text-xs transition uppercase tracking-wider flex items-center gap-2 ${adminTab === 'abandoned_carts' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-400 hover:text-white'}`}
+              >
+                <ShoppingCart className="w-4 h-4" />
+                <span>Carrinhos</span>
+                {adminCustomers.filter(c => c.active_cart && Array.isArray(c.active_cart) && c.active_cart.length > 0 && c.cart_updated_at && (Date.now() - new Date(c.cart_updated_at).getTime()) >= 15 * 60 * 1000).length > 0 && (
+                  <span className="px-1.5 py-0.5 bg-amber-500 text-white rounded-full text-xxs font-bold animate-pulse" title="Carrinhos não finalizados (+15 min)">
+                    {adminCustomers.filter(c => c.active_cart && Array.isArray(c.active_cart) && c.active_cart.length > 0 && c.cart_updated_at && (Date.now() - new Date(c.cart_updated_at).getTime()) >= 15 * 60 * 1000).length}
+                  </span>
                 )}
               </button>
               <button
@@ -5081,11 +6471,9 @@ function App() {
                                   <span className={`text-xxs font-semibold px-2 py-0.5 rounded-full ${order.status === 'delivered' ? 'bg-emerald-50 text-emerald-600' : order.status === 'cancelled' ? 'bg-red-50 text-red-600' : 'bg-amber-50 text-amber-600'}`}>
                                     {order.status === 'delivered' ? 'Entregue' : order.status === 'cancelled' ? 'Cancelado' : 'Pendente'}
                                   </span>
-                                  {order.status === 'delivered' && (
-                                    <span className={`text-xxs font-bold px-2 py-0.5 rounded-lg border ${order.payment_status === 'paid' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-red-50 text-red-700 border-red-200'}`}>
-                                      {order.payment_status === 'paid' ? 'Pago' : 'Pagamento Pendente'}
-                                    </span>
-                                  )}
+                                  <span className={`text-xxs font-bold px-2 py-0.5 rounded-lg border ${order.payment_status === 'paid' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-amber-50 text-amber-700 border-amber-200'}`}>
+                                    {order.payment_status === 'paid' ? 'Pago' : 'Pagamento Pendente'}
+                                  </span>
                                 </div>
                               </div>
 
@@ -5233,6 +6621,27 @@ function App() {
                                     >
                                       <Tag className="w-4 h-4" />
                                       Desconto
+                                    </button>
+                                    <button
+                                      onClick={() => togglePaymentStatus(order.id, order.payment_status)}
+                                      className={`py-2 px-3 text-xs font-semibold rounded-lg transition flex items-center gap-1 border ${
+                                        order.payment_status === 'paid'
+                                          ? 'bg-emerald-50 border-emerald-200 text-emerald-800 hover:bg-emerald-100'
+                                          : 'bg-amber-50 border-amber-200 text-amber-800 hover:bg-amber-100'
+                                      }`}
+                                      title={order.payment_status === 'paid' ? 'Pagamento Confirmado (clique para estornar)' : 'Confirmar Pagamento'}
+                                    >
+                                      {order.payment_status === 'paid' ? (
+                                        <>
+                                          <CheckSquare className="w-4 h-4 text-emerald-600" />
+                                          <span>Pago</span>
+                                        </>
+                                      ) : (
+                                        <>
+                                          <Square className="w-4 h-4 text-amber-600" />
+                                          <span>Confirmar PGTO</span>
+                                        </>
+                                      )}
                                     </button>
                                     <button
                                       onClick={() => handleMarkAsDelivered(order)}
@@ -5593,6 +7002,242 @@ function App() {
             )
           })()}
 
+          {/* TAB: ABANDONED CARTS */}
+          {adminTab === 'abandoned_carts' && (() => {
+            const allCartsWithItems = adminCustomers.filter(c => {
+              return c.active_cart && Array.isArray(c.active_cart) && c.active_cart.length > 0 && c.cart_updated_at;
+            });
+
+            const filteredAbandoned = allCartsWithItems.filter(c => {
+              const diffMs = Date.now() - new Date(c.cart_updated_at).getTime();
+              const is15Min = diffMs >= 15 * 60 * 1000;
+              
+              if (abandonedCartFilter === '15min' && !is15Min) return false;
+
+              if (abandonedCartSearch.trim()) {
+                const query = abandonedCartSearch.toLowerCase();
+                const matchName = c.name && c.name.toLowerCase().includes(query);
+                const matchNick = c.nickname && c.nickname.toLowerCase().includes(query);
+                const matchPhone = c.phone && c.phone.includes(query);
+                return matchName || matchNick || matchPhone;
+              }
+
+              return true;
+            }).sort((a, b) => new Date(b.cart_updated_at).getTime() - new Date(a.cart_updated_at).getTime());
+
+            return (
+              <div className="space-y-6 animate-fade-in">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div>
+                    <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                      <ShoppingCart className="w-5 h-5 text-indigo-600" />
+                      Carrinhos Não Finalizados
+                    </h2>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      Acompanhe os clientes com produtos no carrinho e contate-os para auxiliá-los a fechar o pedido.
+                    </p>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={loadAdminCustomers}
+                      className="py-2 px-3 bg-white hover:bg-slate-50 border border-slate-200 text-slate-600 text-xs font-semibold rounded-xl transition flex items-center gap-1.5 shadow-2xs"
+                      title="Recarregar dados"
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                      <span>Atualizar</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Filters & Search Row */}
+                <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-white p-4 rounded-2xl border border-slate-100 shadow-2xs">
+                  {/* Filter Pills */}
+                  <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl w-full sm:w-auto">
+                    <button
+                      onClick={() => setAbandonedCartFilter('15min')}
+                      className={`flex-1 sm:flex-none px-3.5 py-1.5 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 ${
+                        abandonedCartFilter === '15min' ? 'bg-white text-indigo-700 shadow-xs' : 'text-slate-500 hover:text-slate-800'
+                      }`}
+                    >
+                      <span>Abandonados (+15 min)</span>
+                      <span className={`text-xxs px-1.5 py-0.5 rounded-md font-mono font-bold ${
+                        abandonedCartFilter === '15min' ? 'bg-amber-500 text-white' : 'bg-slate-200 text-slate-600'
+                      }`}>
+                        {allCartsWithItems.filter(c => (Date.now() - new Date(c.cart_updated_at).getTime()) >= 15 * 60 * 1000).length}
+                      </span>
+                    </button>
+                    <button
+                      onClick={() => setAbandonedCartFilter('all')}
+                      className={`flex-1 sm:flex-none px-3.5 py-1.5 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 ${
+                        abandonedCartFilter === 'all' ? 'bg-white text-indigo-700 shadow-xs' : 'text-slate-500 hover:text-slate-800'
+                      }`}
+                    >
+                      <span>Todos Ativos</span>
+                      <span className={`text-xxs px-1.5 py-0.5 rounded-md font-mono font-bold ${
+                        abandonedCartFilter === 'all' ? 'bg-indigo-600 text-white' : 'bg-slate-200 text-slate-600'
+                      }`}>
+                        {allCartsWithItems.length}
+                      </span>
+                    </button>
+                  </div>
+
+                  {/* Search Input */}
+                  <div className="relative w-full sm:w-72">
+                    <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                    <input
+                      type="text"
+                      placeholder="Buscar por cliente ou telefone..."
+                      value={abandonedCartSearch}
+                      onChange={(e) => setAbandonedCartSearch(e.target.value)}
+                      className="w-full pl-10 pr-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:bg-white transition"
+                    />
+                    {abandonedCartSearch && (
+                      <button
+                        onClick={() => setAbandonedCartSearch('')}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Carts Grid / List */}
+                {filteredAbandoned.length === 0 ? (
+                  <div className="bg-white p-12 rounded-2xl text-center text-slate-400 border border-slate-100 shadow-2xs">
+                    <ShoppingCart className="w-12 h-12 mx-auto mb-3 text-slate-300" />
+                    <p className="font-bold text-slate-700 mb-1">Nenhum carrinho encontrado</p>
+                    <p className="text-xs text-slate-400">
+                      {abandonedCartFilter === '15min' 
+                        ? 'Não há clientes com compras paradas há mais de 15 minutos.' 
+                        : 'No momento nenhum cliente possui itens pendentes no carrinho.'}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                    {filteredAbandoned.map(customer => {
+                      const diffMinutes = Math.floor((Date.now() - new Date(customer.cart_updated_at).getTime()) / 60000);
+                      const isOver15 = diffMinutes >= 15;
+                      const cartTotal = customer.active_cart.reduce((t, i) => t + (i.price * i.quantity), 0);
+                      const totalItemsCount = customer.active_cart.reduce((t, i) => t + (i.unit === 'kg' ? 1 : i.quantity), 0);
+
+                      let timeText = `há ${diffMinutes} min`;
+                      if (diffMinutes >= 60) {
+                        const hours = Math.floor(diffMinutes / 60);
+                        const mins = diffMinutes % 60;
+                        timeText = `há ${hours}h ${mins > 0 ? `${mins}m` : ''}`;
+                      }
+
+                      return (
+                        <div 
+                          key={customer.id} 
+                          className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-2xs hover:shadow-md transition-all space-y-4 flex flex-col justify-between"
+                        >
+                          <div className="space-y-3">
+                            {/* Header: Customer Info & Elapsed Time */}
+                            <div className="flex items-start justify-between gap-3 border-b border-slate-100 pb-3">
+                              <div>
+                                <div className="flex items-center gap-2">
+                                  <h3 className="font-bold text-slate-900 text-base">
+                                    {customer.nickname || customer.name}
+                                  </h3>
+                                  {customer.nickname && (
+                                    <span className="text-xxs text-slate-400 font-mono">({customer.name})</span>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-3 text-xs text-slate-500 mt-0.5 font-mono">
+                                  <span className="flex items-center gap-1">
+                                    <Phone className="w-3.5 h-3.5 text-slate-400" />
+                                    {getFormattedPhone(customer.phone)}
+                                  </span>
+                                  {customer.neighborhood && (
+                                    <span className="flex items-center gap-1 text-slate-400 font-sans">
+                                      <MapPin className="w-3.5 h-3.5 text-slate-400" />
+                                      {customer.neighborhood}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+
+                              <span className={`text-xxs font-bold px-2.5 py-1 rounded-lg shrink-0 flex items-center gap-1 font-mono ${
+                                isOver15 ? 'bg-amber-100 text-amber-800 border border-amber-200' : 'bg-slate-100 text-slate-600'
+                              }`}>
+                                <Calendar className="w-3 h-3" />
+                                {timeText}
+                              </span>
+                            </div>
+
+                            {/* Cart Items List */}
+                            <div className="bg-slate-50/80 rounded-xl p-3 space-y-2 border border-slate-100">
+                              <div className="flex items-center justify-between text-xxs font-bold text-slate-400 uppercase tracking-wider font-mono">
+                                <span>Itens no Carrinho ({totalItemsCount})</span>
+                                <span>Subtotal</span>
+                              </div>
+                              <div className="divide-y divide-slate-100 max-h-48 overflow-y-auto pr-1">
+                                {customer.active_cart.map((item, idx) => (
+                                  <div key={idx} className="py-2 flex items-center justify-between text-xs gap-2">
+                                    <div className="flex items-center gap-2 min-w-0">
+                                      <div className="w-8 h-8 rounded-lg bg-white border border-slate-200/80 p-0.5 flex items-center justify-center shrink-0 overflow-hidden">
+                                        {item.image_url ? (
+                                          <img src={item.image_url} alt={item.name} className="w-full h-full object-contain" />
+                                        ) : (
+                                          <Package className="w-4 h-4 text-slate-300" />
+                                        )}
+                                      </div>
+                                      <div className="min-w-0">
+                                        <p className="font-semibold text-slate-800 truncate leading-tight">{item.name}</p>
+                                        <p className="text-xxs text-slate-400 font-mono">
+                                          {item.quantity} {item.unit || 'un'} x R$ {item.price.toFixed(2)}
+                                        </p>
+                                      </div>
+                                    </div>
+                                    <span className="font-bold text-slate-900 shrink-0 font-mono">
+                                      R$ {(item.price * item.quantity).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Footer: Total & Actions */}
+                          <div className="pt-3 border-t border-slate-100 flex items-center justify-between gap-3 flex-wrap">
+                            <div>
+                              <span className="text-xxs text-slate-400 font-semibold block uppercase font-mono">Total no Carrinho</span>
+                              <span className="text-lg font-black text-slate-900 font-mono">
+                                R$ {cartTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </span>
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() => handleImpersonate(customer)}
+                                className="py-2 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-xl text-xs transition flex items-center gap-1.5"
+                                title="Fazer pedido pelo cliente"
+                              >
+                                <ExternalLink className="w-3.5 h-3.5 text-slate-500" />
+                                <span>Ver Catálogo</span>
+                              </button>
+                              
+                              <button
+                                onClick={() => handleContactAbandonedCartCustomer(customer)}
+                                className="py-2 px-3.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs transition flex items-center gap-1.5 shadow-sm active:scale-95"
+                                title="Enviar mensagem personalizada no WhatsApp"
+                              >
+                                <MessageSquare className="w-3.5 h-3.5" />
+                                <span>WhatsApp</span>
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
           {/* TAB 3.5: COUPONS (ADMIN) */}
           {adminTab === 'coupons' && (
             <div className="space-y-6 animate-fade-in">
@@ -5747,6 +7392,17 @@ function App() {
                         ></textarea>
                       </div>
 
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 font-mono">Mensagem de Carrinho Não Finalizado (Aba Carrinhos)</label>
+                        <textarea
+                          value={whatsappAbandonedCartTemplate}
+                          onChange={(e) => setWhatsappAbandonedCartTemplate(e.target.value)}
+                          rows="4"
+                          className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition text-sm font-mono"
+                          required
+                        ></textarea>
+                      </div>
+
                       {/* Variables info block */}
                       <div className="bg-indigo-50 border border-indigo-100 p-4 rounded-xl space-y-2">
                         <span className="block text-xxs font-bold text-indigo-700 uppercase tracking-wider font-mono">Variáveis Dinâmicas Disponíveis:</span>
@@ -5781,6 +7437,53 @@ function App() {
                         className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition text-sm font-mono"
                         required
                       ></textarea>
+                    </div>
+                  </div>
+
+                  {/* Card 3: Gateway SMS & WhatsApp */}
+                  <div className="bg-white border border-slate-100 rounded-2xl p-6 shadow-sm space-y-4">
+                    <div>
+                      <h2 className="text-xl font-bold text-slate-800 mb-1">Gateway de SMS & WhatsApp Automático</h2>
+                      <p className="text-slate-400 text-xs leading-relaxed">
+                        Configurações para envio automático em segundo plano sem intervenção do cliente.
+                      </p>
+                    </div>
+
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 font-mono">Chave de API Textbelt (SMS)</label>
+                        <input
+                          type="text"
+                          value={smsApiKey}
+                          onChange={(e) => setSmsApiKey(e.target.value)}
+                          placeholder="textbelt (Gratuito padrão)"
+                          className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 text-sm font-mono"
+                        />
+                        <p className="text-xxs text-slate-400 mt-1">Padrão gratuito: <code>textbelt</code> (1 SMS grátis/dia por IP) ou insira sua chave própria.</p>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 font-mono">URL da API / Webhook de WhatsApp (Opcional)</label>
+                        <input
+                          type="text"
+                          value={whatsappApiUrl}
+                          onChange={(e) => setWhatsappApiUrl(e.target.value)}
+                          placeholder="https://sua-api.com/message/send (ou deixe vazio para CallMeBot grátis)"
+                          className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 text-sm font-mono"
+                        />
+                        <p className="text-xxs text-slate-400 mt-1">Compatível com Evolution API, Z-API, Green-API ou webhook customizado.</p>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 font-mono">Token / Chave de Acesso WhatsApp (Opcional)</label>
+                        <input
+                          type="text"
+                          value={whatsappApiToken}
+                          onChange={(e) => setWhatsappApiToken(e.target.value)}
+                          placeholder="Token da API / Chave CallMeBot"
+                          className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 text-sm font-mono"
+                        />
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -7262,21 +8965,23 @@ function App() {
             </div>
 
             <div className="flex flex-col gap-2 pt-2">
-              <button
-                onClick={() => {
-                  const order = deliveringOrder;
-                  setDeliveringOrder(null);
-                  if (order.status !== 'delivered') {
-                    markAsDeliveredQuery(order, true, true);
-                  } else {
-                    sendWhatsAppMessage(order, true);
-                  }
-                }}
-                className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-xl text-xs transition shadow-sm flex items-center justify-center gap-2"
-              >
-                <DollarSign className="w-4 h-4" />
-                Mensagem COM Cobrança (Pix)
-              </button>
+              {deliveringOrder.payment_status !== 'paid' && (
+                <button
+                  onClick={() => {
+                    const order = deliveringOrder;
+                    setDeliveringOrder(null);
+                    if (order.status !== 'delivered') {
+                      markAsDeliveredQuery(order, true, true);
+                    } else {
+                      sendWhatsAppMessage(order, true);
+                    }
+                  }}
+                  className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-xl text-xs transition shadow-sm flex items-center justify-center gap-2"
+                >
+                  <DollarSign className="w-4 h-4" />
+                  Mensagem COM Cobrança (Pix)
+                </button>
+              )}
               
               <button
                 onClick={() => {
@@ -7288,9 +8993,13 @@ function App() {
                     sendWhatsAppMessage(order, false);
                   }
                 }}
-                className="w-full py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-xl text-xs transition border border-slate-200 flex items-center justify-center gap-2"
+                className={`w-full py-3 font-semibold rounded-xl text-xs transition flex items-center justify-center gap-2 ${
+                  deliveringOrder.payment_status === 'paid'
+                    ? 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm border border-transparent'
+                    : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200'
+                }`}
               >
-                <Check className="w-4 h-4 text-emerald-600" />
+                <Check className={`w-4 h-4 ${deliveringOrder.payment_status === 'paid' ? 'text-white' : 'text-emerald-600'}`} />
                 Mensagem SEM Cobrança
               </button>
 

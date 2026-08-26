@@ -17,74 +17,12 @@ $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 GRANT EXECUTE ON FUNCTION private.get_admin_password_hash() TO anon, authenticated, service_role, postgres;
 
--- Recalcula o subtotal, descontos e total de um pedido no servidor (Gatilho interno)
-CREATE OR REPLACE FUNCTION private.recalculate_order_total()
-RETURNS TRIGGER AS $$
-DECLARE
-  v_order_id bigint;
-  v_total numeric(10,2) := 0;
-  v_subtotal numeric(10,2) := 0;
-  v_discount numeric(10,2) := 0;
-  v_coupon_code text;
-  v_discount_type text;
-  v_discount_value numeric(10,2);
-BEGIN
-  IF TG_OP = 'DELETE' THEN
-    v_order_id := OLD.order_id;
-  ELSE
-    v_order_id := NEW.order_id;
-  END IF;
-
-  SELECT COALESCE(SUM(oi.quantity * p.price), 0)
-  INTO v_subtotal
-  FROM public.order_items oi
-  JOIN public.products p ON oi.product_id = p.id
-  WHERE oi.order_id = v_order_id;
-
-  SELECT coupon_code, COALESCE(discount, 0)
-  INTO v_coupon_code, v_discount
-  FROM public.orders
-  WHERE id = v_order_id;
-
-  IF v_coupon_code IS NOT NULL THEN
-    SELECT discount_type, discount_value
-    INTO v_discount_type, v_discount_value
-    FROM public.coupons
-    WHERE code = v_coupon_code AND is_active = true;
-
-    IF v_discount_type = 'percentage' THEN
-      v_discount := v_subtotal * (v_discount_value / 100);
-    ELSIF v_discount_type = 'fixed' THEN
-      v_discount := v_discount_value;
-    END IF;
-  END IF;
-
-  IF v_discount > v_subtotal THEN
-    v_discount := v_subtotal;
-  END IF;
-
-  v_total := v_subtotal - v_discount;
-
-  UPDATE public.orders
-  SET total_price = GREATEST(0, v_total),
-      discount = v_discount
-  WHERE id = v_order_id;
-
-  RETURN NULL;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
-
-GRANT EXECUTE ON FUNCTION private.recalculate_order_total() TO anon, authenticated, service_role, postgres;
-
--- ─── 3. REMOÇÃO DAS FUNÇÕES DO ESQUEMA PÚBLICO E GATILHOS ANTIGOS ───
-DROP FUNCTION IF EXISTS public.recalculate_order_total() CASCADE;
-DROP FUNCTION IF EXISTS public.get_admin_password_hash() CASCADE;
-
--- ─── 4. CRIAÇÃO DE GATILHOS NO BANCO ───
+-- ─── 3. REMOÇÃO DE GATILHOS E FUNÇÕES DE RECÁLCULO DESNECESSÁRIAS ───
+-- O frontend já calcula preços, itens fracionados e cupons com precisão
 DROP TRIGGER IF EXISTS trigger_recalculate_order_total ON order_items;
-CREATE TRIGGER trigger_recalculate_order_total
-AFTER INSERT OR UPDATE OR DELETE ON order_items
-FOR EACH ROW EXECUTE FUNCTION private.recalculate_order_total();
+DROP FUNCTION IF EXISTS public.recalculate_order_total() CASCADE;
+DROP FUNCTION IF EXISTS private.recalculate_order_total() CASCADE;
+DROP FUNCTION IF EXISTS public.get_admin_password_hash() CASCADE;
 
 -- ─── 5. RPCs DO ESQUEMA PÚBLICO COM SEARCH_PATH FIXO E PERMISSÕES ESTRITAS ───
 

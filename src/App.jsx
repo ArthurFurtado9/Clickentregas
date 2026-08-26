@@ -3,7 +3,7 @@ import {
   ShoppingBag, ShoppingCart, Trash2, Plus, Minus, Check, Truck, 
   Settings, LogOut, Package, Edit, MapPin, User, Phone, ArrowLeft, 
   Search, FileText, X, ChevronRight, Info, ExternalLink, RefreshCw, PlusCircle, Calendar,
-  Star, Scale, CheckSquare, Square, TrendingUp, DollarSign, Undo2, MessageSquare, Tag, Users, ClipboardList, Copy, Bell, SlidersHorizontal, Sparkles, Egg, Layers, ReceiptText, Eye, EyeOff, Key, Lock
+  Star, Scale, CheckSquare, Square, TrendingUp, DollarSign, Undo2, MessageSquare, Tag, Users, ClipboardList, Copy, Bell, SlidersHorizontal, Sparkles, Egg, Layers, ReceiptText, Eye, EyeOff, Key, Lock, Edit3, Save, ChevronDown
 } from 'lucide-react'
 import { supabase, isSupabaseConfigured, updateSupabaseHeaders } from './supabaseClient'
 
@@ -96,6 +96,12 @@ const parseCustomerSecurity = (customer) => {
     security_question: secQ || customer.security_question || null,
     security_answer_hash: secA || customer.security_answer_hash || null
   }
+}
+
+const sanitizeUserForStorage = (userObj) => {
+  if (!userObj || typeof userObj !== 'object') return null
+  const { password_hash, security_answer_hash, recovery_code, ...safeUser } = userObj
+  return safeUser
 }
 
 const sanitizeErrorMessage = (err) => {
@@ -348,6 +354,12 @@ function App() {
   const [groupSearchQuery, setGroupSearchQuery] = useState('')
   const [adjustingOrder, setAdjustingOrder] = useState(null) // order object being adjusted
   const [deliveringOrder, setDeliveringOrder] = useState(null) // order object being marked as delivered
+  const [editingOrder, setEditingOrder] = useState(null) // order object being edited (add/remove products)
+  const [editingOrderItems, setEditingOrderItems] = useState([]) // working list of items for editing
+  const [addProductSearchQuery, setAddProductSearchQuery] = useState('')
+  const [selectedProductToAdd, setSelectedProductToAdd] = useState(null)
+  const [addProductQuantity, setAddProductQuantity] = useState(1)
+  const [showProductDropdown, setShowProductDropdown] = useState(false)
   const [adjustingQuantities, setAdjustingQuantities] = useState({}) // { orderItemId: quantity }
   const [adminLoading, setAdminLoading] = useState(false)
   const [adminOrderSubTab, setAdminOrderSubTab] = useState('pending') // pending, delivered
@@ -1363,7 +1375,7 @@ function App() {
         isAdmin: false 
       }
       setUser(userObject)
-      localStorage.setItem('clickentregas_user', JSON.stringify(userObject))
+      localStorage.setItem('clickentregas_user', JSON.stringify(sanitizeUserForStorage(userObject)))
 
       setCep(clientFoundCustomer.cep || '')
       setStreet(clientFoundCustomer.street || '')
@@ -1411,7 +1423,7 @@ function App() {
       const customer = parseCustomerSecurity(clientFoundCustomer)
       const userObject = { ...customer, isAdmin: false }
       setUser(userObject)
-      localStorage.setItem('clickentregas_user', JSON.stringify(userObject))
+      localStorage.setItem('clickentregas_user', JSON.stringify(sanitizeUserForStorage(userObject)))
 
       setCep(customer.cep || '')
       setStreet(customer.street || '')
@@ -1485,7 +1497,7 @@ function App() {
       }
       setUser(updatedUser)
       setClientFoundCustomer(updatedUser)
-      localStorage.setItem('clickentregas_user', JSON.stringify(updatedUser))
+      localStorage.setItem('clickentregas_user', JSON.stringify(sanitizeUserForStorage(updatedUser)))
 
       setClientSecuritySetupNeeded(false)
       setSecurityAnswerInput('')
@@ -1565,7 +1577,7 @@ function App() {
         isAdmin: false 
       }
       setUser(userObject)
-      localStorage.setItem('clickentregas_user', JSON.stringify(userObject))
+      localStorage.setItem('clickentregas_user', JSON.stringify(sanitizeUserForStorage(userObject)))
       
       setIsNewUser(false)
       setClientPasswordInput('')
@@ -1690,7 +1702,7 @@ function App() {
 
       const userObject = { ...(data || clientFoundCustomer), password_hash: newHash, isAdmin: false }
       setUser(userObject)
-      localStorage.setItem('clickentregas_user', JSON.stringify(userObject))
+      localStorage.setItem('clickentregas_user', JSON.stringify(sanitizeUserForStorage(userObject)))
 
       setShowForgotPasswordModal(false)
       setClientPasswordPromptNeeded(false)
@@ -1744,7 +1756,7 @@ function App() {
 
       const updatedUser = { ...user, password_hash: newHash }
       setUser(updatedUser)
-      localStorage.setItem('clickentregas_user', JSON.stringify(updatedUser))
+      localStorage.setItem('clickentregas_user', JSON.stringify(sanitizeUserForStorage(updatedUser)))
 
       setShowChangePasswordModal(false)
       setCurrentPasswordInput('')
@@ -1795,7 +1807,7 @@ function App() {
         recovery_code: secPayload 
       }
       setUser(updatedUser)
-      localStorage.setItem('clickentregas_user', JSON.stringify(updatedUser))
+      localStorage.setItem('clickentregas_user', JSON.stringify(sanitizeUserForStorage(updatedUser)))
 
       setShowChangeSecurityQuestionModal(false)
       setProfileSecurityAnswer('')
@@ -2078,7 +2090,7 @@ function App() {
       .replace(/{telefone}/g, getFormattedPhone(customer.phone))
 
     const cleanPhone = customer.phone.replace(/\D/g, '')
-    window.open(`https://wa.me/55${cleanPhone}?text=${encodeURIComponent(msg)}`, '_blank')
+    window.open(`https://wa.me/55${cleanPhone}?text=${encodeURIComponent(msg)}`, '_blank', 'noopener,noreferrer')
   }
 
   const openEditProfileModal = () => {
@@ -3175,6 +3187,242 @@ function App() {
     }
   }
 
+  // Admin: Clear / Delete Abandoned Cart
+  const handleClearAbandonedCart = async (customer) => {
+    if (!customer) return
+    const custName = customer.nickname || customer.name || 'Cliente'
+    showConfirm(
+      'Limpar Carrinho',
+      `Deseja realmente limpar e excluir os itens do carrinho não finalizado de ${custName}?`,
+      async () => {
+        setAdminLoading(true)
+        try {
+          updateSupabaseHeaders()
+          const { error } = await supabase
+            .from('customers')
+            .update({ active_cart: null, cart_updated_at: null })
+            .eq('id', customer.id)
+
+          if (error) throw error
+
+          setAdminCustomers(prev => prev.map(c => c.id === customer.id ? { ...c, active_cart: null, cart_updated_at: null } : c))
+          addToast(`Carrinho de ${custName} excluído com sucesso!`, 'success')
+        } catch (err) {
+          showAlert('Erro ao Limpar Carrinho', sanitizeErrorMessage(err))
+        } finally {
+          setAdminLoading(false)
+        }
+      }
+    )
+  }
+
+  // Admin: Edit Order (Add / Remove / Modify items)
+  const startEditingOrder = (order) => {
+    setEditingOrder(order)
+    const items = (order.order_items || []).map(item => ({
+      id: item.id,
+      order_id: order.id,
+      product_id: item.product_id,
+      product_name: item.products?.name || 'Produto',
+      product_image_url: item.products?.image_url || '',
+      unit: item.products?.unit || 'un',
+      price_unit: item.price_unit,
+      quantity_requested: item.quantity_requested,
+      quantity_final: item.quantity_final,
+      price_final: item.price_final,
+      is_approximate: item.is_approximate,
+      quantity: item.quantity_final !== null ? item.quantity_final : item.quantity_requested,
+      isNew: false,
+      isDeleted: false
+    }))
+    setEditingOrderItems(items)
+    setAddProductSearchQuery('')
+    setSelectedProductToAdd(null)
+    setAddProductQuantity(1)
+  }
+
+  const handleEditOrderItemQtyChange = (itemId, newQty) => {
+    const val = parseFloat(newQty)
+    if (isNaN(val) || val <= 0) return
+    setEditingOrderItems(prev => prev.map(item => {
+      if (item.id === itemId) {
+        return {
+          ...item,
+          quantity: item.unit === 'kg' ? parseFloat(val.toFixed(3)) : val
+        }
+      }
+      return item
+    }))
+  }
+
+  const handleRemoveOrderItem = (itemId) => {
+    setEditingOrderItems(prev => prev.map(item => {
+      if (item.id === itemId) {
+        return { ...item, isDeleted: true }
+      }
+      return item
+    }))
+  }
+
+  const handleAddProductToOrder = () => {
+    if (!selectedProductToAdd) return
+    const qty = parseFloat(addProductQuantity)
+    if (isNaN(qty) || qty <= 0) {
+      showAlert('Quantidade Inválida', 'Informe uma quantidade maior que zero.')
+      return
+    }
+
+    // Check if product is already in active items
+    const existingIndex = editingOrderItems.findIndex(i => i.product_id === selectedProductToAdd.id && !i.isDeleted)
+    if (existingIndex >= 0) {
+      // Increase quantity
+      setEditingOrderItems(prev => prev.map((item, idx) => {
+        if (idx === existingIndex) {
+          const updatedQty = item.unit === 'kg' 
+            ? parseFloat((item.quantity + qty).toFixed(3)) 
+            : item.quantity + qty
+          return { ...item, quantity: updatedQty }
+        }
+        return item
+      }))
+      addToast(`Quantidade de "${selectedProductToAdd.name}" aumentada!`, 'info')
+    } else {
+      // Check if was previously in order but marked deleted
+      const deletedIndex = editingOrderItems.findIndex(i => i.product_id === selectedProductToAdd.id && i.isDeleted)
+      if (deletedIndex >= 0) {
+        setEditingOrderItems(prev => prev.map((item, idx) => {
+          if (idx === deletedIndex) {
+            return {
+              ...item,
+              quantity: selectedProductToAdd.unit === 'kg' ? parseFloat(qty.toFixed(3)) : qty,
+              price_unit: selectedProductToAdd.price,
+              isDeleted: false
+            }
+          }
+          return item
+        }))
+        addToast(`"${selectedProductToAdd.name}" adicionado de volta ao pedido!`, 'success')
+      } else {
+        // Brand new item
+        const newItem = {
+          id: 'new_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
+          order_id: editingOrder.id,
+          product_id: selectedProductToAdd.id,
+          product_name: selectedProductToAdd.name,
+          product_image_url: selectedProductToAdd.image_url || '',
+          unit: selectedProductToAdd.unit || 'un',
+          price_unit: selectedProductToAdd.price,
+          quantity_requested: qty,
+          quantity_final: selectedProductToAdd.is_approximate ? null : qty,
+          price_final: selectedProductToAdd.is_approximate ? null : parseFloat((selectedProductToAdd.price * qty).toFixed(2)),
+          is_approximate: selectedProductToAdd.is_approximate,
+          quantity: qty,
+          isNew: true,
+          isDeleted: false
+        }
+        setEditingOrderItems(prev => [...prev, newItem])
+        addToast(`"${selectedProductToAdd.name}" adicionado ao pedido!`, 'success')
+      }
+    }
+
+    setSelectedProductToAdd(null)
+    setAddProductSearchQuery('')
+    setAddProductQuantity(1)
+  }
+
+  const saveEditedOrder = async () => {
+    if (!configured || !editingOrder) return
+    const activeItems = editingOrderItems.filter(i => !i.isDeleted)
+    if (activeItems.length === 0) {
+      showAlert('Pedido Vazio', 'O pedido precisa ter pelo menos um item ativo. Se desejar cancelar o pedido, utilize o botão de excluir pedido.')
+      return
+    }
+
+    setAdminLoading(true)
+    try {
+      updateSupabaseHeaders()
+
+      // 1. Delete removed items
+      const deletedItems = editingOrderItems.filter(i => i.isDeleted && !i.isNew)
+      for (const item of deletedItems) {
+        const { error: delErr } = await supabase
+          .from('order_items')
+          .delete()
+          .eq('id', item.id)
+        if (delErr) throw delErr
+      }
+
+      // 2. Insert new items and update existing items
+      let newSubtotal = 0
+      for (const item of activeItems) {
+        const finalLinePrice = parseFloat((item.price_unit * item.quantity).toFixed(2))
+        newSubtotal += finalLinePrice
+
+        if (item.isNew) {
+          const { error: insErr } = await supabase
+            .from('order_items')
+            .insert([{
+              order_id: editingOrder.id,
+              product_id: item.product_id,
+              quantity_requested: item.quantity,
+              quantity_final: item.is_approximate ? null : item.quantity,
+              price_unit: item.price_unit,
+              price_final: item.is_approximate ? null : finalLinePrice,
+              is_approximate: item.is_approximate
+            }])
+          if (insErr) throw insErr
+        } else {
+          const { error: updErr } = await supabase
+            .from('order_items')
+            .update({
+              quantity_requested: item.quantity,
+              quantity_final: item.is_approximate ? (item.quantity_final !== null ? item.quantity : null) : item.quantity,
+              price_final: item.is_approximate ? (item.price_final !== null ? finalLinePrice : null) : finalLinePrice
+            })
+            .eq('id', item.id)
+          if (updErr) throw updErr
+        }
+      }
+
+      // 3. Recalculate discount & total_price
+      let newDiscount = editingOrder.discount || 0
+      if (editingOrder.coupon_code) {
+        const coupon = adminCoupons.find(c => c.code === editingOrder.coupon_code)
+        if (coupon) {
+          if (coupon.discount_type === 'percentage') {
+            newDiscount = parseFloat((newSubtotal * (coupon.discount_value / 100)).toFixed(2))
+          } else {
+            newDiscount = Math.min(newSubtotal, coupon.discount_value)
+          }
+        }
+      }
+      if (newDiscount > newSubtotal) {
+        newDiscount = newSubtotal
+      }
+
+      const finalTotalPrice = parseFloat(Math.max(0, newSubtotal - newDiscount).toFixed(2))
+
+      const { error: orderErr } = await supabase
+        .from('orders')
+        .update({
+          discount: newDiscount,
+          total_price: finalTotalPrice
+        })
+        .eq('id', editingOrder.id)
+
+      if (orderErr) throw orderErr
+
+      setEditingOrder(null)
+      setEditingOrderItems([])
+      await loadAdminOrders()
+      addToast('Pedido atualizado com sucesso!', 'success')
+    } catch (err) {
+      showAlert('Erro ao Atualizar Pedido', sanitizeErrorMessage(err))
+    } finally {
+      setAdminLoading(false)
+    }
+  }
+
   // WhatsApp link generator & sender
   const sendWhatsAppMessage = (order, includeCharge = true) => {
     let pixMessage = ''
@@ -3237,7 +3485,7 @@ function App() {
     const phoneClean = order.customers?.phone || ''
     const waUrl = `https://api.whatsapp.com/send?phone=55${phoneClean}&text=${encodeURIComponent(formattedMsg)}`
     
-    window.open(waUrl, '_blank')
+    window.open(waUrl, '_blank', 'noopener,noreferrer')
   }
 
   const toggleAssembly = async (order) => {
@@ -6559,143 +6807,144 @@ function App() {
                               )}
                             </div>
 
-                            <div className="border-t border-slate-100 pt-4 flex items-center justify-between flex-wrap gap-3">
-                              <div>
-                                <span className="text-xxs text-slate-400 block font-semibold">Valor do Pedido</span>
-                                <div className="flex items-baseline gap-1.5 flex-wrap">
-                                  <span className="text-base font-bold text-slate-800">
-                                    R$ {order.total_price.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                                  </span>
-                                  {order.discount > 0 && (
-                                    <span className="text-xxs font-bold text-emerald-600 bg-emerald-50 border border-emerald-100 px-1.5 py-0.5 rounded flex items-center gap-0.5" title={order.coupon_code ? `Cupom: ${order.coupon_code}` : 'Desconto Manual'}>
-                                      {order.coupon_code ? <Tag className="w-2.5 h-2.5" /> : null}
-                                      -{order.coupon_code ? `${order.coupon_code} ` : ''}R$ {order.discount.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            <div className="border-t border-slate-100 pt-3.5 space-y-3">
+                              {/* Row 1: Order Total & Status Checkboxes */}
+                              <div className="flex items-center justify-between gap-3 flex-wrap">
+                                <div>
+                                  <span className="text-xxs text-slate-400 block font-bold uppercase tracking-wider font-mono">Valor do Pedido</span>
+                                  <div className="flex items-baseline gap-2 flex-wrap">
+                                    <span className="text-lg font-black text-slate-900 font-mono">
+                                      R$ {order.total_price.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                     </span>
-                                  )}
+                                    {order.discount > 0 && (
+                                      <span className="text-xxs font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-lg flex items-center gap-1 font-mono" title={order.coupon_code ? `Cupom: ${order.coupon_code}` : 'Desconto Manual'}>
+                                        {order.coupon_code ? <Tag className="w-3 h-3" /> : null}
+                                        -{order.coupon_code ? `${order.coupon_code} ` : ''}R$ {order.discount.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                      </span>
+                                    )}
+                                  </div>
                                 </div>
-                              </div>
 
-                              <div className="flex gap-2 items-center flex-wrap">
-                                <button
-                                  onClick={() => deleteOrder(order.id)}
-                                  className="p-2 hover:bg-red-50 text-slate-400 hover:text-red-600 rounded-lg transition"
-                                  title="Excluir Pedido"
-                                >
-                                  <Trash2 className="w-4 h-4" />
-                                </button>
-                                {isPending ? (
-                                  <>
+                                {/* Quick Toggles: Montagem & Pagamento */}
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  {isPending && (
                                     <button
                                       onClick={() => toggleAssembly(order)}
-                                      className={`py-2 px-3 text-xs font-semibold rounded-lg transition flex items-center gap-1 border ${
+                                      className={`py-1.5 px-2.5 text-xs font-semibold rounded-xl transition flex items-center gap-1.5 border shadow-2xs ${
                                         order.is_assembled 
-                                          ? 'bg-amber-50 border-amber-200 text-amber-800 hover:bg-amber-100' 
-                                          : 'border-slate-200 hover:bg-slate-50 text-slate-600'
+                                          ? 'bg-amber-500 text-white border-amber-600 font-bold' 
+                                          : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-600'
                                       }`}
                                       title={order.is_assembled ? 'Pedido Montado (clique para desmarcar)' : 'Marcar como Montado'}
                                     >
                                       {order.is_assembled ? (
-                                        <>
-                                          <CheckSquare className="w-4 h-4 text-amber-600" />
-                                          <span>Montado</span>
-                                        </>
+                                        <CheckSquare className="w-4 h-4 text-white" />
                                       ) : (
-                                        <>
-                                          <Square className="w-4 h-4 text-slate-400" />
-                                          <span>Montar</span>
-                                        </>
+                                        <Square className="w-4 h-4 text-slate-400" />
                                       )}
+                                      <span>{order.is_assembled ? 'Montado' : 'Montar'}</span>
                                     </button>
-                                    {hasAppx && (
-                                      <button
-                                        onClick={() => startAdjustingOrder(order)}
-                                        className="py-2 px-3 border border-indigo-600 hover:bg-indigo-50 text-indigo-600 text-xs font-semibold rounded-lg transition"
-                                      >
-                                        Ajustar Fracionados
-                                      </button>
+                                  )}
+
+                                  <button
+                                    onClick={() => togglePaymentStatus(order.id, order.payment_status)}
+                                    className={`py-1.5 px-2.5 text-xs font-semibold rounded-xl transition flex items-center gap-1.5 border shadow-2xs ${
+                                      order.payment_status === 'paid'
+                                        ? 'bg-emerald-600 text-white border-emerald-700 font-bold'
+                                        : isPending 
+                                          ? 'bg-white border-amber-300 text-amber-800 hover:bg-amber-50' 
+                                          : 'bg-white border-red-200 text-red-700 hover:bg-red-50'
+                                    }`}
+                                    title={order.payment_status === 'paid' ? 'Pagamento Confirmado (clique para estornar)' : 'Confirmar Pagamento'}
+                                  >
+                                    {order.payment_status === 'paid' ? (
+                                      <CheckSquare className="w-4 h-4 text-white" />
+                                    ) : (
+                                      <Square className={`w-4 h-4 ${isPending ? 'text-amber-500' : 'text-red-400'}`} />
                                     )}
-                                    <button
-                                      onClick={() => startDiscountingOrder(order)}
-                                      className="py-2 px-3 border border-emerald-600 hover:bg-emerald-50 text-emerald-600 text-xs font-semibold rounded-lg transition flex items-center gap-1"
-                                      title="Aplicar desconto manual ao pedido"
-                                    >
-                                      <Tag className="w-4 h-4" />
-                                      Desconto
-                                    </button>
-                                    <button
-                                      onClick={() => togglePaymentStatus(order.id, order.payment_status)}
-                                      className={`py-2 px-3 text-xs font-semibold rounded-lg transition flex items-center gap-1 border ${
-                                        order.payment_status === 'paid'
-                                          ? 'bg-emerald-50 border-emerald-200 text-emerald-800 hover:bg-emerald-100'
-                                          : 'bg-amber-50 border-amber-200 text-amber-800 hover:bg-amber-100'
-                                      }`}
-                                      title={order.payment_status === 'paid' ? 'Pagamento Confirmado (clique para estornar)' : 'Confirmar Pagamento'}
-                                    >
-                                      {order.payment_status === 'paid' ? (
-                                        <>
-                                          <CheckSquare className="w-4 h-4 text-emerald-600" />
-                                          <span>Pago</span>
-                                        </>
-                                      ) : (
-                                        <>
-                                          <Square className="w-4 h-4 text-amber-600" />
-                                          <span>Confirmar PGTO</span>
-                                        </>
-                                      )}
-                                    </button>
-                                    <button
-                                      onClick={() => handleMarkAsDelivered(order)}
-                                      className="py-2 px-3 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg transition flex items-center gap-1 shadow-sm"
-                                    >
-                                      <Check className="w-4 h-4" />
-                                      Entregue
-                                    </button>
-                                  </>
-                                ) : (
-                                  <>
-                                    {order.status === 'delivered' && (
-                                      <>
+                                    <span>{order.payment_status === 'paid' ? 'Pago' : 'Confirmar PGTO'}</span>
+                                  </button>
+                                </div>
+                              </div>
+
+                              {/* Row 2: Action Toolbar */}
+                              <div className="pt-2.5 border-t border-slate-100 flex items-center justify-between gap-2 flex-wrap">
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <button
+                                    onClick={() => deleteOrder(order.id)}
+                                    className="p-2 hover:bg-red-50 text-slate-400 hover:text-red-600 rounded-xl transition border border-transparent hover:border-red-100"
+                                    title="Excluir Pedido"
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </button>
+
+                                  {isPending ? (
+                                    <>
+                                      <button
+                                        onClick={() => startEditingOrder(order)}
+                                        className="py-1.5 px-3 bg-indigo-50/70 hover:bg-indigo-100/80 text-indigo-700 border border-indigo-200/70 text-xs font-semibold rounded-xl transition flex items-center gap-1.5"
+                                        title="Editar itens do pedido (adicionar, remover ou alterar quantidades)"
+                                      >
+                                        <Edit3 className="w-3.5 h-3.5 text-indigo-600" />
+                                        <span>Editar Pedido</span>
+                                      </button>
+
+                                      {hasAppx && (
                                         <button
-                                          onClick={() => togglePaymentStatus(order.id, order.payment_status)}
-                                          className={`py-2 px-3 text-xs font-semibold rounded-lg transition flex items-center gap-1 border ${
-                                            order.payment_status === 'paid'
-                                              ? 'bg-emerald-50 border-emerald-200 text-emerald-800 hover:bg-emerald-100'
-                                              : 'bg-red-50 border-red-200 text-red-800 hover:bg-red-100'
-                                          }`}
-                                          title={order.payment_status === 'paid' ? 'Pagamento Confirmado (clique para estornar)' : 'Confirmar Pagamento'}
+                                          onClick={() => startAdjustingOrder(order)}
+                                          className="py-1.5 px-3 bg-amber-50/70 hover:bg-amber-100/80 text-amber-800 border border-amber-200/70 text-xs font-semibold rounded-xl transition flex items-center gap-1.5"
+                                          title="Ajustar peso real dos produtos fracionados"
                                         >
-                                          {order.payment_status === 'paid' ? (
-                                            <>
-                                              <CheckSquare className="w-4 h-4 text-emerald-600" />
-                                              <span>Pago</span>
-                                            </>
-                                          ) : (
-                                            <>
-                                              <Square className="w-4 h-4 text-red-500" />
-                                              <span>Confirmar PGTO</span>
-                                            </>
-                                          )}
+                                          <Scale className="w-3.5 h-3.5 text-amber-600" />
+                                          <span>Ajustar Fracionados</span>
                                         </button>
+                                      )}
+
+                                      <button
+                                        onClick={() => startDiscountingOrder(order)}
+                                        className="py-1.5 px-3 bg-slate-100 hover:bg-slate-200/80 text-slate-700 border border-slate-200/70 text-xs font-semibold rounded-xl transition flex items-center gap-1.5"
+                                        title="Aplicar desconto manual ao pedido"
+                                      >
+                                        <Tag className="w-3.5 h-3.5 text-slate-500" />
+                                        <span>Desconto</span>
+                                      </button>
+                                    </>
+                                  ) : (
+                                    <>
+                                      {order.status === 'delivered' && (
                                         <button
                                           onClick={() => handleRevertToPending(order)}
-                                          className="py-2 px-3 border border-slate-200 hover:bg-slate-50 text-slate-600 text-xs font-semibold rounded-lg transition flex items-center gap-1"
+                                          className="py-1.5 px-3 border border-slate-200 hover:bg-slate-50 text-slate-600 text-xs font-semibold rounded-xl transition flex items-center gap-1.5"
                                           title="Reverter pedido de volta para Montados"
                                         >
-                                          <Undo2 className="w-4 h-4 text-slate-500" />
+                                          <Undo2 className="w-3.5 h-3.5 text-slate-500" />
                                           <span>Reverter</span>
                                         </button>
-                                      </>
-                                    )}
+                                      )}
+                                    </>
+                                  )}
+                                </div>
+
+                                <div className="flex items-center gap-2">
+                                  {isPending ? (
+                                    <button
+                                      onClick={() => handleMarkAsDelivered(order)}
+                                      className="py-2 px-4 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white text-xs font-bold rounded-xl transition flex items-center gap-1.5 shadow-sm shadow-emerald-700/20"
+                                    >
+                                      <Check className="w-4 h-4" />
+                                      <span>Marcar como Entregue</span>
+                                    </button>
+                                  ) : (
                                     <button
                                       onClick={() => handleSendWhatsAppOnly(order)}
-                                      className="py-2 px-3 border border-slate-200 hover:bg-slate-50 text-slate-600 text-xs font-semibold rounded-lg transition flex items-center gap-1.5"
+                                      className="py-1.5 px-3 border border-slate-200 hover:bg-slate-50 text-slate-600 text-xs font-semibold rounded-xl transition flex items-center gap-1.5"
                                       title="Enviar ou reenviar WhatsApp"
                                     >
                                       <ExternalLink className="w-4 h-4" />
-                                      WhatsApp
+                                      <span>WhatsApp</span>
                                     </button>
-                                  </>
-                                )}
+                                  )}
+                                </div>
                               </div>
                             </div>
                           </div>
@@ -7210,6 +7459,15 @@ function App() {
                             </div>
 
                             <div className="flex items-center gap-2">
+                              <button
+                                onClick={() => handleClearAbandonedCart(customer)}
+                                className="py-2 px-3 bg-red-50 hover:bg-red-100 text-red-650 hover:text-red-700 font-semibold rounded-xl text-xs transition flex items-center gap-1.5 border border-red-200/60 shadow-2xs active:scale-95"
+                                title="Excluir itens do carrinho não finalizado"
+                              >
+                                <Trash2 className="w-3.5 h-3.5 text-red-500" />
+                                <span>Limpar Carrinho</span>
+                              </button>
+
                               <button
                                 onClick={() => handleImpersonate(customer)}
                                 className="py-2 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-xl text-xs transition flex items-center gap-1.5"
@@ -8509,6 +8767,339 @@ function App() {
                         </button>
                       </div>
                     </div>
+                  )
+                })()}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* MODAL: EDIT ORDER (ADD / REMOVE / ADJUST ITEMS) */}
+        {editingOrder && (
+          <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl w-full max-w-2xl shadow-2xl p-6 space-y-4 animate-scale-in max-h-[90vh] flex flex-col">
+              {/* Header */}
+              <div className="flex items-center justify-between border-b border-slate-100 pb-3 shrink-0">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 bg-indigo-50 text-indigo-600 rounded-xl flex items-center justify-center">
+                    <Edit3 className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-slate-800 text-base leading-tight flex items-center gap-2">
+                      <span>Editar Pedido</span>
+                      <span className="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded-md font-mono">
+                        #{editingOrder.id.substring(0, 8).toUpperCase()}
+                      </span>
+                    </h3>
+                    <p className="text-xs text-slate-400 font-mono mt-0.5">
+                      Cliente: <span className="font-bold text-slate-700">{editingOrder.customers?.name || 'Cliente'}</span> • {getFormattedPhone(editingOrder.customers?.phone)}
+                    </p>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => {
+                    setEditingOrder(null)
+                    setEditingOrderItems([])
+                  }}
+                  className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-400"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Scrollable Content */}
+              <div className="space-y-4 overflow-y-auto flex-1 pr-1">
+                {/* 1. Add Product Section */}
+                <div className="bg-slate-50 border border-slate-200/70 p-3.5 rounded-xl space-y-3">
+                  <span className="block text-xxs font-bold text-slate-500 uppercase tracking-wider font-mono flex items-center gap-1.5">
+                    <Plus className="w-3.5 h-3.5 text-indigo-600" />
+                    Adicionar Produto ao Pedido
+                  </span>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5 items-end">
+                    {/* Search & Select Product */}
+                    <div className="sm:col-span-7 space-y-1">
+                      <div className="flex items-center justify-between">
+                        <label className="block text-xxs font-semibold text-slate-500">Selecionar Produto</label>
+                        <span className="text-xxs text-slate-400 font-mono">
+                          {products.length} cadastrados
+                        </span>
+                      </div>
+                      <div className="relative">
+                        <div className="flex items-center">
+                          <input
+                            type="text"
+                            placeholder="Buscar por nome ou clique para ver todos..."
+                            value={addProductSearchQuery}
+                            onFocus={() => setShowProductDropdown(true)}
+                            onChange={(e) => {
+                              setAddProductSearchQuery(e.target.value)
+                              setShowProductDropdown(true)
+                              if (selectedProductToAdd && selectedProductToAdd.name !== e.target.value) {
+                                setSelectedProductToAdd(null)
+                              }
+                            }}
+                            className="w-full pl-3 pr-16 py-2 bg-white border border-slate-200 rounded-xl text-slate-800 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500/20 font-medium cursor-pointer"
+                          />
+                          <div className="absolute right-1.5 flex items-center gap-0.5">
+                            {addProductSearchQuery && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setAddProductSearchQuery('')
+                                  setSelectedProductToAdd(null)
+                                  setShowProductDropdown(true)
+                                }}
+                                className="text-slate-400 hover:text-slate-600 p-1"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => setShowProductDropdown(!showProductDropdown)}
+                              className="text-slate-400 hover:text-indigo-600 p-1.5 rounded-lg hover:bg-slate-100 transition"
+                              title="Abrir cascata com todos os produtos"
+                            >
+                              <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showProductDropdown ? 'rotate-180 text-indigo-600' : ''}`} />
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Full Cascade Dropdown */}
+                        {showProductDropdown && (
+                          <>
+                            <div 
+                              className="fixed inset-0 z-10" 
+                              onClick={() => setShowProductDropdown(false)}
+                            />
+                            <div className="absolute left-0 right-0 top-full mt-1 bg-white border border-slate-200 rounded-xl shadow-xl max-h-60 overflow-y-auto z-20 divide-y divide-slate-100 animate-fade-in">
+                              <div className="p-2 bg-slate-50 border-b border-slate-100 flex items-center justify-between text-xxs font-bold text-slate-500 uppercase tracking-wider font-mono">
+                                <span>Lista de Produtos Cadastrados ({products.filter(p => !addProductSearchQuery || p.name.toLowerCase().includes(addProductSearchQuery.toLowerCase())).length})</span>
+                                <span>Preço / Unidade</span>
+                              </div>
+                              {products
+                                .filter(p => !addProductSearchQuery || p.name.toLowerCase().includes(addProductSearchQuery.toLowerCase()))
+                                .map(prod => {
+                                  const isSelected = selectedProductToAdd?.id === prod.id
+                                  return (
+                                    <button
+                                      key={prod.id}
+                                      type="button"
+                                      onClick={() => {
+                                        setSelectedProductToAdd(prod)
+                                        setAddProductSearchQuery(prod.name)
+                                        setAddProductQuantity(prod.unit === 'kg' ? 0.5 : 1)
+                                        setShowProductDropdown(false)
+                                      }}
+                                      className={`w-full text-left p-2.5 flex items-center justify-between text-xs transition ${
+                                        isSelected ? 'bg-indigo-50 text-indigo-900 font-bold' : 'hover:bg-slate-50 text-slate-800'
+                                      }`}
+                                    >
+                                      <div className="flex items-center gap-2 min-w-0 pr-2">
+                                        <div className="w-6 h-6 rounded-md bg-slate-100 border border-slate-200 p-0.5 flex items-center justify-center shrink-0 overflow-hidden">
+                                          {prod.image_url ? (
+                                            <img src={prod.image_url} alt={prod.name} className="w-full h-full object-contain" />
+                                          ) : (
+                                            <Package className="w-3.5 h-3.5 text-slate-400" />
+                                          )}
+                                        </div>
+                                        <div className="min-w-0 truncate">
+                                          <p className="truncate font-medium">{prod.name}</p>
+                                          {prod.category && (
+                                            <span className="text-xxs text-slate-400 font-mono">{prod.category}</span>
+                                          )}
+                                        </div>
+                                      </div>
+                                      <span className="font-mono font-bold text-slate-700 shrink-0">
+                                        R$ {prod.price.toFixed(2)} / {prod.unit}
+                                      </span>
+                                    </button>
+                                  )
+                                })}
+                              {products.filter(p => !addProductSearchQuery || p.name.toLowerCase().includes(addProductSearchQuery.toLowerCase())).length === 0 && (
+                                <div className="p-4 text-center text-slate-400 text-xs">
+                                  Nenhum produto encontrado com "{addProductSearchQuery}".
+                                </div>
+                              )}
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Quantity */}
+                    <div className="sm:col-span-3 space-y-1">
+                      <label className="block text-xxs font-semibold text-slate-500">
+                        Qtd ({selectedProductToAdd?.unit || 'un'})
+                      </label>
+                      <input
+                        type="number"
+                        step={selectedProductToAdd?.unit === 'kg' ? '0.001' : '1'}
+                        min="0.001"
+                        value={addProductQuantity}
+                        onChange={(e) => setAddProductQuantity(e.target.value)}
+                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-slate-800 text-xs font-mono font-bold text-center focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                      />
+                    </div>
+
+                    {/* Add Button */}
+                    <div className="sm:col-span-2">
+                      <button
+                        type="button"
+                        onClick={handleAddProductToOrder}
+                        disabled={!selectedProductToAdd}
+                        className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-1 shadow-xs disabled:opacity-40"
+                      >
+                        <Plus className="w-4 h-4" />
+                        <span>Inserir</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 2. Items List */}
+                <div className="space-y-2">
+                  <span className="block text-xxs font-bold text-slate-400 uppercase tracking-wider font-mono">
+                    Itens do Pedido ({editingOrderItems.filter(i => !i.isDeleted).length})
+                  </span>
+
+                  <div className="divide-y divide-slate-100 border border-slate-200/80 rounded-xl overflow-hidden bg-white">
+                    {editingOrderItems.filter(i => !i.isDeleted).map((item) => {
+                      const lineTotal = item.price_unit * item.quantity
+
+                      return (
+                        <div key={item.id} className="p-3 flex items-center justify-between gap-3 text-xs">
+                          <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                            <div className="w-8 h-8 rounded-lg bg-slate-50 border border-slate-200/70 p-0.5 flex items-center justify-center shrink-0 overflow-hidden">
+                              {item.product_image_url ? (
+                                <img src={item.product_image_url} alt={item.product_name} className="w-full h-full object-contain" />
+                              ) : (
+                                <Package className="w-4 h-4 text-slate-300" />
+                              )}
+                            </div>
+                            <div className="min-w-0">
+                              <p className="font-semibold text-slate-800 truncate">{item.product_name}</p>
+                              <p className="text-xxs text-slate-400 font-mono">
+                                R$ {item.price_unit.toFixed(2)} / {item.unit}
+                                {item.is_approximate && <span className="ml-1 text-indigo-600 font-bold">• Fracionado</span>}
+                                {item.isNew && <span className="ml-1 text-emerald-600 font-bold">• Novo</span>}
+                              </p>
+                            </div>
+                          </div>
+
+                          {/* Quantity Controls */}
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const step = item.unit === 'kg' ? 0.1 : 1
+                                const next = Math.max(step, item.quantity - step)
+                                handleEditOrderItemQtyChange(item.id, next)
+                              }}
+                              className="w-7 h-7 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center font-bold text-sm transition"
+                            >
+                              -
+                            </button>
+
+                            <input
+                              type="number"
+                              step={item.unit === 'kg' ? '0.001' : '1'}
+                              min={item.unit === 'kg' ? '0.001' : '1'}
+                              value={item.quantity}
+                              onChange={(e) => handleEditOrderItemQtyChange(item.id, e.target.value)}
+                              className="w-16 py-1 px-1 text-center font-mono font-bold text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                            />
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const step = item.unit === 'kg' ? 0.1 : 1
+                                const next = item.quantity + step
+                                handleEditOrderItemQtyChange(item.id, next)
+                              }}
+                              className="w-7 h-7 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center font-bold text-sm transition"
+                            >
+                              +
+                            </button>
+                            <span className="text-xxs font-mono text-slate-400 w-5">{item.unit}</span>
+                          </div>
+
+                          {/* Line Total & Remove */}
+                          <div className="flex items-center gap-3 shrink-0">
+                            <span className="font-bold text-slate-900 font-mono w-20 text-right">
+                              R$ {lineTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveOrderItem(item.id)}
+                              className="p-1.5 hover:bg-red-50 text-slate-400 hover:text-red-600 rounded-lg transition"
+                              title="Remover produto do pedido"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+                      )
+                    })}
+
+                    {editingOrderItems.filter(i => !i.isDeleted).length === 0 && (
+                      <div className="p-6 text-center text-slate-400 text-xs">
+                        Nenhum item restante no pedido. Adicione produtos acima.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Footer Summary & Save */}
+              <div className="border-t border-slate-100 pt-3 flex items-center justify-between gap-3 shrink-0 flex-wrap">
+                {(() => {
+                  const activeItems = editingOrderItems.filter(i => !i.isDeleted)
+                  const subtotal = activeItems.reduce((acc, i) => acc + (i.price_unit * i.quantity), 0)
+                  let discount = editingOrder.discount || 0
+                  if (discount > subtotal) discount = subtotal
+                  const finalTotal = Math.max(0, subtotal - discount)
+
+                  return (
+                    <>
+                      <div className="space-y-0.5">
+                        <div className="flex items-center gap-2 text-xxs text-slate-400 font-mono">
+                          <span>Subtotal: R$ {subtotal.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                          {discount > 0 && (
+                            <span className="text-emerald-600 font-bold">Desconto: -R$ {discount.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                          )}
+                        </div>
+                        <div className="flex items-baseline gap-1.5">
+                          <span className="text-xxs text-slate-500 font-bold uppercase font-mono">Total Atualizado:</span>
+                          <span className="text-lg font-black text-slate-900 font-mono">
+                            R$ {finalTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingOrder(null)
+                            setEditingOrderItems([])
+                          }}
+                          className="py-2.5 px-4 border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-semibold rounded-xl transition"
+                        >
+                          Cancelar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={saveEditedOrder}
+                          disabled={adminLoading || activeItems.length === 0}
+                          className="py-2.5 px-5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl transition shadow-md shadow-indigo-100 disabled:opacity-50 flex items-center gap-1.5"
+                        >
+                          <Save className="w-4 h-4" />
+                          <span>{adminLoading ? 'Salvando...' : 'Salvar Alterações'}</span>
+                        </button>
+                      </div>
+                    </>
                   )
                 })()}
               </div>

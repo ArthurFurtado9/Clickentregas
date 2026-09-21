@@ -185,11 +185,29 @@ CREATE POLICY "Admin gerencia pedidos" ON orders FOR UPDATE TO anon
   USING (current_setting('request.headers', true)::json->>'x-admin-key' = private.get_admin_password_hash())
   WITH CHECK (current_setting('request.headers', true)::json->>'x-admin-key' = private.get_admin_password_hash());
 
+DROP POLICY IF EXISTS "Clientes atualizam pedidos pendentes" ON orders;
+CREATE POLICY "Clientes atualizam pedidos pendentes" ON orders FOR UPDATE TO anon
+  USING (
+    customer_id IN (
+      SELECT id FROM customers 
+      WHERE phone = current_setting('request.headers', true)::json->>'x-client-phone'
+    )
+    AND is_assembled = false
+  )
+  WITH CHECK (
+    customer_id IN (
+      SELECT id FROM customers 
+      WHERE phone = current_setting('request.headers', true)::json->>'x-client-phone'
+    )
+    AND is_assembled = false
+  );
+
 -- Tabela order_items
 ALTER TABLE order_items ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Leitura restrita itens" ON order_items;
 DROP POLICY IF EXISTS "Insercao de itens publica" ON order_items;
 DROP POLICY IF EXISTS "Admin gerencia itens" ON order_items;
+DROP POLICY IF EXISTS "Clientes gerenciam itens de pedidos nao montados" ON order_items;
 CREATE POLICY "Leitura restrita itens" ON order_items FOR SELECT TO anon
   USING (
     current_setting('request.headers', true)::json->>'x-admin-key' = private.get_admin_password_hash() OR
@@ -208,3 +226,26 @@ CREATE POLICY "Insercao de itens publica" ON order_items FOR INSERT TO anon
 CREATE POLICY "Admin gerencia itens" ON order_items FOR ALL TO anon
   USING (current_setting('request.headers', true)::json->>'x-admin-key' = private.get_admin_password_hash())
   WITH CHECK (current_setting('request.headers', true)::json->>'x-admin-key' = private.get_admin_password_hash());
+
+CREATE POLICY "Clientes gerenciam itens de pedidos nao montados" ON order_items FOR ALL TO anon
+  USING (
+    order_id IN (
+      SELECT id FROM orders 
+      WHERE customer_id IN (
+        SELECT id FROM customers 
+        WHERE phone = current_setting('request.headers', true)::json->>'x-client-phone'
+      )
+      AND is_assembled = false
+    )
+  )
+  WITH CHECK (
+    order_id IN (
+      SELECT id FROM orders 
+      WHERE customer_id IN (
+        SELECT id FROM customers 
+        WHERE phone = current_setting('request.headers', true)::json->>'x-client-phone'
+      )
+      AND is_assembled = false
+    )
+  );
+

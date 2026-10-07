@@ -404,6 +404,7 @@ function App() {
   const [trackingOrder, setTrackingOrder] = useState(null)
   const [trackingError, setTrackingError] = useState(null)
   const [trackingLoading, setTrackingLoading] = useState(false)
+  const [generatingMpPix, setGeneratingMpPix] = useState(false)
 
   // Dynamic brand customization states
   const [clientBrandName, setClientBrandName] = useState('ClickEntregas')
@@ -723,11 +724,11 @@ function App() {
   }
 
   // Load Single Order details for tracking
-  const loadTrackingOrder = async (orderId) => {
+  const loadTrackingOrder = async (orderId, silent = false) => {
     if (!orderId) return
     try {
-      setTrackingLoading(true)
-      setTrackingError(null)
+      if (!silent) setTrackingLoading(true)
+      if (!silent) setTrackingError(null)
       const { data, error } = await supabase
         .from('orders')
         .select(`
@@ -750,15 +751,60 @@ function App() {
 
       if (error) throw error
       if (!data) {
-        setTrackingError('Pedido não encontrado.')
+        if (!silent) setTrackingError('Pedido não encontrado.')
       } else {
-        setTrackingOrder(data)
+        setTrackingOrder(prev => {
+          if (silent && prev && prev.payment_status === data.payment_status && prev.status === data.status) {
+            return prev
+          }
+          return data
+        })
       }
     } catch (err) {
       console.error('Erro ao carregar detalhes do pedido:', err.message)
-      setTrackingError('Erro ao carregar os dados do pedido. Verifique o link ou tente novamente.')
+      if (!silent) setTrackingError('Erro ao carregar os dados do pedido. Verifique o link ou tente novamente.')
     } finally {
-      setTrackingLoading(false)
+      if (!silent) setTrackingLoading(false)
+    }
+  }
+
+  // Gera ou obtém cobrança Pix Mercado Pago via Edge Function
+  const handleGenerateMpPix = async (orderId) => {
+    if (!orderId) return
+    try {
+      setGeneratingMpPix(true)
+      const { data, error } = await supabase.functions.invoke('criar-cobranca-pix', {
+        body: { order_id: orderId }
+      })
+
+      if (error) {
+        console.error('Erro na Edge Function criar-cobranca-pix:', error)
+        let detailedMsg = error.message || 'Erro ao gerar Pix no Mercado Pago'
+        if (error.context && typeof error.context.json === 'function') {
+          try {
+            const errBody = await error.context.json()
+            if (errBody?.error) detailedMsg = errBody.error + (errBody.details ? `: ${JSON.stringify(errBody.details)}` : '')
+          } catch {
+            // fallback
+          }
+        }
+        addToast(detailedMsg, 'error')
+        return
+      }
+
+      if (data?.error) {
+        addToast(data.error + (data.details ? `: ${JSON.stringify(data.details)}` : ''), 'error')
+        return
+      }
+
+      // Se gerou com sucesso, recarrega os dados do pedido para exibir o QR Code retornado
+      await loadTrackingOrder(orderId)
+      addToast('QR Code Pix gerado com sucesso!', 'success')
+    } catch (err) {
+      console.error('Erro ao gerar Pix do Mercado Pago:', err)
+      addToast('Não foi possível gerar a cobrança Pix. Tente novamente.', 'error')
+    } finally {
+      setGeneratingMpPix(false)
     }
   }
 
@@ -1068,6 +1114,10 @@ function App() {
   // Listen to configuration changes
   useEffect(() => {
     if (configured) {
+      const savedAdminHash = localStorage.getItem('clickentregas_admin_hash')
+      if (savedAdminHash && supabase) {
+        supabase.rest.headers.set('x-admin-key', savedAdminHash)
+      }
       Promise.resolve().then(() => {
         loadAdminSettings()
       })
@@ -1084,6 +1134,17 @@ function App() {
       })
     }
   }, [configured])
+
+  // Auto-refresh tracking order every 4s while unpaid and has pix generated
+  useEffect(() => {
+    if (!configured || !trackingOrder || trackingOrder.payment_status === 'paid' || !trackingOrder.pix_copia_cola) return
+
+    const interval = setInterval(() => {
+      loadTrackingOrder(trackingOrder.id, true)
+    }, 4000)
+
+    return () => clearInterval(interval)
+  }, [configured, trackingOrder?.id, trackingOrder?.payment_status, trackingOrder?.pix_copia_cola])
 
   // Load products for catalog
   useEffect(() => {
@@ -1106,20 +1167,40 @@ function App() {
     }
   }, [page, configured, adminTab])
 
-  // Realtime subscription for new orders (Admin)
+  // Realtime subscription for orders (Admin + Tracking Page + Meus Pedidos)
   useEffect(() => {
-    if (!configured || page !== 'admin' || !supabase) return
+    if (!configured || !supabase) return
 
     const channel = supabase
-      .channel('orders_realtime')
+      .channel('orders_realtime_global')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, (payload) => {
-        Promise.resolve().then(() => {
-          loadAdminOrders()
-        })
-        if (payload.eventType === 'INSERT') {
-          playNewOrderSound()
-          const newOrder = payload.new
-          addToast(`Novo pedido #${newOrder.id.substring(0, 8).toUpperCase()} recebido! Total: R$ ${parseFloat(newOrder.total_price || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, 'info')
+        // Se o admin estiver na tela de admin, recarrega a lista
+        if (page === 'admin') {
+          Promise.resolve().then(() => {
+            loadAdminOrders()
+          })
+          if (payload.eventType === 'INSERT') {
+            playNewOrderSound()
+            const newOrder = payload.new
+            addToast(`Novo pedido #${newOrder.id.substring(0, 8).toUpperCase()} recebido! Total: R$ ${parseFloat(newOrder.total_price || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, 'info')
+          }
+        }
+
+        // Se o cliente estiver na página de rastreamento do pedido alterado
+        if (page === 'tracking' && trackingOrder && payload.new && payload.new.id === trackingOrder.id) {
+          Promise.resolve().then(() => {
+            loadTrackingOrder(trackingOrder.id, true)
+          })
+          if (payload.new.payment_status === 'paid' && trackingOrder.payment_status !== 'paid') {
+            addToast('🎉 Pagamento aprovado com sucesso!', 'success')
+          }
+        }
+
+        // Se o cliente estiver na aba 'Meus Pedidos'
+        if (user && user.id && clientTab === 'orders') {
+          Promise.resolve().then(() => {
+            loadClientOrders()
+          })
         }
       })
       .subscribe()
@@ -1127,7 +1208,7 @@ function App() {
     return () => {
       supabase.removeChannel(channel)
     }
-  }, [page, configured])
+  }, [page, configured, trackingOrder?.id, trackingOrder?.payment_status, user?.id, clientTab])
 
   // Load Client Orders History
   const loadClientOrders = async () => {
@@ -1849,6 +1930,9 @@ function App() {
       }
 
       localStorage.setItem('clickentregas_admin_hash', hash)
+      if (supabase) {
+        supabase.rest.headers.set('x-admin-key', hash)
+      }
       const adminUser = { name: adminName, phone: adminPhone, isAdmin: true }
       setUser(adminUser)
       localStorage.setItem('clickentregas_user', JSON.stringify(adminUser))
@@ -1879,6 +1963,9 @@ function App() {
 
       if (isValid) {
         localStorage.setItem('clickentregas_admin_hash', hash)
+        if (supabase) {
+          supabase.rest.headers.set('x-admin-key', hash)
+        }
         const adminUser = { name: adminName, phone: adminPhone, isAdmin: true }
         setUser(adminUser)
         localStorage.setItem('clickentregas_user', JSON.stringify(adminUser))
@@ -3131,12 +3218,18 @@ function App() {
 
       const finalTotalPrice = parseFloat(Math.max(0, newTotal - calculatedDiscount).toFixed(2))
 
-      // Update order total and discount
+      // Update order total and discount (reset stale Pix if not yet paid so fresh amount is generated)
       const { error: orderError } = await supabase
         .from('orders')
         .update({
           discount: calculatedDiscount,
-          total_price: finalTotalPrice
+          total_price: finalTotalPrice,
+          ...(adjustingOrder.payment_status !== 'paid' ? {
+            pix_copia_cola: null,
+            pix_qr_code: null,
+            mp_payment_id: null,
+            pix_expires_at: null
+          } : {})
         })
         .eq('id', adjustingOrder.id)
 
@@ -3178,7 +3271,13 @@ function App() {
         .from('orders')
         .update({
           discount: calculatedDiscount,
-          total_price: finalTotalPrice
+          total_price: finalTotalPrice,
+          ...(discountingOrder.payment_status !== 'paid' ? {
+            pix_copia_cola: null,
+            pix_qr_code: null,
+            mp_payment_id: null,
+            pix_expires_at: null
+          } : {})
         })
         .eq('id', discountingOrder.id)
 
@@ -3413,7 +3512,13 @@ function App() {
         .from('orders')
         .update({
           discount: newDiscount,
-          total_price: finalTotalPrice
+          total_price: finalTotalPrice,
+          ...(editingOrder.payment_status !== 'paid' ? {
+            pix_copia_cola: null,
+            pix_qr_code: null,
+            mp_payment_id: null,
+            pix_expires_at: null
+          } : {})
         })
         .eq('id', editingOrder.id)
 
@@ -3666,7 +3771,13 @@ function App() {
         .from('orders')
         .update({
           discount: newDiscount,
-          total_price: finalTotalPrice
+          total_price: finalTotalPrice,
+          ...(clientEditingOrder.payment_status !== 'paid' ? {
+            pix_copia_cola: null,
+            pix_qr_code: null,
+            mp_payment_id: null,
+            pix_expires_at: null
+          } : {})
         })
         .eq('id', clientEditingOrder.id)
 
@@ -3685,29 +3796,51 @@ function App() {
   }
 
   // WhatsApp link generator & sender
-  const sendWhatsAppMessage = (order, includeCharge = true) => {
+  const sendWhatsAppMessage = async (order, includeCharge = true, waWindow = null) => {
     let pixMessage = ''
-    if (includeCharge && pixEnabled && pixKey) {
-      const pixCopiaCola = pixType === 'dynamic' ? generatePixCopiaCola({
+    let mpCopiaCola = order.pix_copia_cola || ''
+    let pixCodeToUse = ''
+
+    // Se a cobrança está ativa, tenta gerar ou reaproveitar o Pix automático do Mercado Pago
+    if (includeCharge) {
+      if (!mpCopiaCola) {
+        try {
+          const { data: pixRes } = await supabase.functions.invoke('criar-cobranca-pix', {
+            body: { order_id: order.id }
+          })
+          if (pixRes?.pix_copia_cola) {
+            mpCopiaCola = pixRes.pix_copia_cola
+            // Atualiza localmente o pedido com o pix gerado
+            order.pix_copia_cola = pixRes.pix_copia_cola
+            order.pix_qr_code = pixRes.pix_qr_code
+          }
+        } catch (mpErr) {
+          console.warn('Não foi possível gerar Pix MP automaticamente, usando fallback:', mpErr)
+        }
+      }
+
+      // Se gerou pelo Mercado Pago, usa o código oficial com baixa automática
+      // Senão usa a chave manual antiga como fallback
+      pixCodeToUse = mpCopiaCola || (pixType === 'dynamic' ? generatePixCopiaCola({
         chave: pixKey,
         beneficiario: pixName || 'ClickEntregas Beneficiário',
         cidade: pixCity || 'SAO PAULO',
         valor: order.total_price
-      }) : '';
+      }) : pixKey);
 
       pixMessage = pixMessageTemplate
         .replace(/{pedido_id}/g, order.id.substring(0, 8).toUpperCase())
         .replace(/R\$\s*{total}/g, `*R$ ${order.total_price.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}*`)
         .replace(/{total}/g, `*R$ ${order.total_price.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}*`)
-        .replace(/{link_pagamento}/g, `${window.location.origin}?pedido=${order.id}${includeCharge ? '' : '&cobrar=false'}`)
-        .replace(/{chave_pix}/g, pixKey)
-        .replace(/{copia_cola}/g, pixCopiaCola);
+        .replace(/{link_pagamento}/g, `${window.location.origin}/?pedido=${order.id}${includeCharge ? '' : '&cobrar=false'}`)
+        .replace(/{chave_pix}/g, pixKey || 'Mercado Pago Pix')
+        .replace(/{copia_cola}/g, pixCodeToUse);
     }
 
     let templateToUse = includeCharge ? whatsappTemplate : whatsappTemplateNoCharge
     if (!templateToUse) {
       templateToUse = includeCharge
-        ? 'Olá {nome}! Seu pedido #{pedido_id} foi entregue. Total: R$ {total}. Agradecemos a preferência!'
+        ? 'Olá {nome}! Seu pedido #{pedido_id} foi entregue. Total: R$ {total}.\n\n{pix}\n\nAgradecemos a preferência!'
         : 'Olá {nome}! Seu pedido #{pedido_id} foi entregue. Agradecemos a preferência!'
     }
 
@@ -3716,14 +3849,14 @@ function App() {
       .replace(/{pedido_id}/g, order.id.substring(0, 8).toUpperCase())
       .replace(/R\$\s*{total}/g, `*R$ ${order.total_price.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}*`)
       .replace(/{total}/g, `*R$ ${order.total_price.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}*`)
-      .replace(/{endereco}/g, order.delivery_address)
+      .replace(/{endereco}/g, order.delivery_address || '')
 
     if (templateToUse.includes('{pix}')) {
       formattedMsg = formattedMsg.replace(/{pix}/g, pixMessage)
     }
 
     // Format items list
-    const itemsList = order.order_items.map(item => {
+    const itemsList = (order.order_items || []).map(item => {
       const qty = item.quantity_final !== null ? item.quantity_final : item.quantity_requested
       const unit = item.products?.unit || 'un'
       const qtyFormatted = unit === 'kg' 
@@ -3734,19 +3867,23 @@ function App() {
 
     formattedMsg = formattedMsg.replace(/{itens}/g, itemsList)
 
-    if (includeCharge && !templateToUse.includes('{pix}') && pixEnabled && pixKey) {
+    if (includeCharge && !templateToUse.includes('{pix}') && pixMessage) {
       formattedMsg += `\n\n${pixMessage}`
     }
 
-    if (!includeCharge || !pixEnabled || !pixKey) {
-      const trackingLink = `${window.location.origin}?pedido=${order.id}${includeCharge ? '' : '&cobrar=false'}`
-      formattedMsg += `\n\n*Acompanhe seu pedido aqui:* ${trackingLink}`
+    const trackingLink = `${window.location.origin}/?pedido=${order.id}${includeCharge ? '' : '&cobrar=false'}`
+    if (!formattedMsg.includes(trackingLink)) {
+      formattedMsg += `\n\n*Acompanhe seu pedido / QR Code Pix:*\n${trackingLink}`
     }
 
-    const phoneClean = order.customers?.phone || ''
+    const phoneClean = (order.customers?.phone || '').replace(/\D/g, '').replace(/^0+/, '')
     const waUrl = `https://api.whatsapp.com/send?phone=55${phoneClean}&text=${encodeURIComponent(formattedMsg)}`
     
-    window.open(waUrl, '_blank', 'noopener,noreferrer')
+    if (waWindow && !waWindow.closed) {
+      waWindow.location.href = waUrl
+    } else {
+      window.open(waUrl, '_blank', 'noopener,noreferrer')
+    }
   }
 
   const toggleAssembly = async (order) => {
@@ -3802,7 +3939,7 @@ function App() {
     setDeliveringOrder(order)
   }
 
-  const markAsDeliveredQuery = async (order, includeCharge = true, sendMessage = true) => {
+  const markAsDeliveredQuery = async (order, includeCharge = true, sendMessage = true, waWindow = null) => {
     setAdminLoading(true)
     try {
       // 1. Update order status
@@ -3818,11 +3955,13 @@ function App() {
 
       // 2. Open WhatsApp link if sendMessage is true, else show success toast
       if (sendMessage) {
-        sendWhatsAppMessage(order, includeCharge)
+        await sendWhatsAppMessage(order, includeCharge, waWindow)
       } else {
+        if (waWindow && !waWindow.closed) waWindow.close()
         addToast('Pedido baixado como entregue com sucesso!', 'success')
       }
     } catch (err) {
+      if (waWindow && !waWindow.closed) waWindow.close()
       showAlert('Erro', sanitizeErrorMessage(err))
     } finally {
       setAdminLoading(false)
@@ -3933,6 +4072,9 @@ function App() {
     localStorage.removeItem('clickentregas_impersonating')
     localStorage.removeItem('clickentregas_admin_profile')
     localStorage.removeItem('clickentregas_admin_hash')
+    if (supabase) {
+      supabase.rest.headers.delete('x-admin-key')
+    }
     setPage('login')
   }
 
@@ -4109,63 +4251,94 @@ function App() {
               </div>
             </div>
 
-            {/* Pix Payment Section */}
-            {pixEnabled && pixKey && !isCancelled && order.payment_status !== 'paid' && new URLSearchParams(window.location.search).get('cobrar') !== 'false' && (
-              <div className={`${theme.cardBg} p-6 rounded-2xl shadow-sm space-y-4`}>
-                <h4 className="font-bold text-slate-800 text-sm flex items-center gap-2 border-b border-slate-50 pb-2">
-                  <DollarSign className={`w-4 h-4 ${theme.text}`} />
-                  Pagamento via Pix
-                </h4>
-                
-                <p className="text-xs text-slate-800 text-center leading-relaxed font-bold">
-                  Para pagar seu pedido, escaneie o QR Code abaixo ou copie e cole o código Pix Copia e Cola.
-                </p>
-                
-                <div className={`${theme.inputBg} border ${theme.lightBorder} p-4 rounded-xl flex flex-col items-center gap-4`}>
-                  {pixType === 'dynamic' ? (
-                    <>
-                      <img 
-                        src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(generatePixCopiaCola({ chave: pixKey, beneficiario: pixName, cidade: pixCity, valor: order.total_price }))}`}
-                        alt="QR Code Pix"
-                        className="w-40 h-40 bg-white p-2 rounded-lg border border-slate-200 shadow-sm"
-                      />
-                    </>
-                  ) : (
-                    pixQrCodeStatic && (
-                      <>
-                        <img 
-                          src={pixQrCodeStatic}
-                          alt="QR Code Pix"
-                          className="w-40 h-40 bg-white p-2 rounded-lg border border-slate-200 shadow-sm"
-                        />
-                      </>
-                    )
-                  )}
+            {/* Pix Payment Section (Mercado Pago Automático & Manual) */}
+            {/* Só exibe o Pix para o cliente se o pedido já foi entregue (ou se já tiver Pix gerado pelo admin) */}
+            {!isCancelled && order.payment_status !== 'paid' && (isDelivered || order.pix_copia_cola) && new URLSearchParams(window.location.search).get('cobrar') !== 'false' && order.total_price > 0 && (
+              <div className={`${theme.cardBg} p-6 rounded-2xl shadow-sm space-y-5 animate-fade-in`}>
+                <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                  <h4 className="font-bold text-slate-800 text-sm flex items-center gap-2">
+                    <DollarSign className={`w-4 h-4 ${theme.text}`} />
+                    Pagamento via Pix
+                  </h4>
+                </div>
 
-                  <div className="w-full space-y-1.5">
-                    <span className="block text-xxs font-semibold text-slate-400 uppercase tracking-wider font-mono">
-                      {pixType === 'dynamic' ? 'Pix Copia e Cola' : 'Chave Pix'}
-                    </span>
-                    <div className="flex gap-2 w-full">
-                      <input
-                        type="text"
-                        readOnly
-                        value={pixType === 'dynamic' ? generatePixCopiaCola({ chave: pixKey, beneficiario: pixName, cidade: pixCity, valor: order.total_price }) : pixKey}
-                        className="flex-1 bg-white/95 border border-slate-200 px-3 py-2 rounded-xl text-xs font-mono select-all focus:outline-none shadow-inner"
-                      />
-                      <button
-                        onClick={() => {
-                          const code = pixType === 'dynamic' ? generatePixCopiaCola({ chave: pixKey, beneficiario: pixName, cidade: pixCity, valor: order.total_price }) : pixKey;
-                          navigator.clipboard.writeText(code);
-                          addToast('Pix copiado com sucesso!', 'success');
-                        }}
-                        className={`px-4 py-2 text-white font-semibold rounded-xl text-xs transition shadow-sm ${theme.bg} ${theme.hoverBg}`}
-                      >
-                        Copiar
-                      </button>
+                {/* Se o pedido já tem o Pix dinâmico gerado pelo Mercado Pago */}
+                {order.pix_copia_cola ? (
+                  <div className="space-y-4">
+                    <p className="text-xs text-slate-700 text-center leading-relaxed">
+                      Escaneie o QR Code abaixo no app do seu banco ou copie o código Pix. O pedido será <strong>confirmado automaticamente</strong> assim que você pagar!
+                    </p>
+
+                    <div className={`${theme.inputBg} border ${theme.lightBorder} p-5 rounded-2xl flex flex-col items-center gap-4`}>
+                      {order.pix_qr_code ? (
+                        <div className="relative group">
+                          <img 
+                            src={`data:image/png;base64,${order.pix_qr_code}`}
+                            alt="QR Code Pix Mercado Pago"
+                            className="w-48 h-48 bg-white p-2.5 rounded-xl border border-slate-200 shadow-sm"
+                          />
+                        </div>
+                      ) : (
+                        <img 
+                          src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(order.pix_copia_cola)}`}
+                          alt="QR Code Pix"
+                          className="w-48 h-48 bg-white p-2.5 rounded-xl border border-slate-200 shadow-sm"
+                        />
+                      )}
+
+                      <div className="w-full space-y-1.5">
+                        <span className="block text-xxs font-semibold text-slate-400 uppercase tracking-wider font-mono">
+                          Código Pix Copia e Cola
+                        </span>
+                        <div className="flex gap-2 w-full">
+                          <input
+                            type="text"
+                            readOnly
+                            value={order.pix_copia_cola}
+                            className="flex-1 bg-white border border-slate-200 px-3 py-2.5 rounded-xl text-xs font-mono select-all focus:outline-none shadow-inner text-slate-800"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              navigator.clipboard.writeText(order.pix_copia_cola)
+                              addToast('Código Pix copiado com sucesso!', 'success')
+                            }}
+                            className={`px-4 py-2.5 text-white font-bold rounded-xl text-xs transition shadow-sm flex items-center gap-1.5 shrink-0 ${theme.bg} ${theme.hoverBg}`}
+                          >
+                            <Copy className="w-3.5 h-3.5" />
+                            <span>Copiar Pix</span>
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   </div>
-                </div>
+                ) : (
+                  /* Se ainda não gerou a cobrança do Mercado Pago, exibe botão para gerar instantâneo */
+                  <div className="space-y-4 text-center">
+                    <p className="text-xs text-slate-600 leading-relaxed max-w-md mx-auto">
+                      Clique no botão abaixo para gerar o seu QR Code Pix.
+                    </p>
+
+                    <button
+                      type="button"
+                      disabled={generatingMpPix}
+                      onClick={() => handleGenerateMpPix(order.id)}
+                      className={`w-full max-w-sm mx-auto py-3.5 px-6 text-white font-bold rounded-xl text-sm transition shadow-md flex items-center justify-center gap-2 ${theme.bg} ${theme.hoverBg} disabled:opacity-50`}
+                    >
+                      {generatingMpPix ? (
+                        <>
+                          <RefreshCw className="w-4 h-4 animate-spin" />
+                          <span>Gerando QR Code Pix...</span>
+                        </>
+                      ) : (
+                        <>
+                          <DollarSign className="w-4 h-4" />
+                          <span>Pagar com Pix (R$ {order.total_price.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                )}
               </div>
             )}
 
@@ -10491,10 +10664,12 @@ function App() {
                   onClick={() => {
                     const order = deliveringOrder;
                     setDeliveringOrder(null);
+                    let waWin = null;
+                    try { waWin = window.open('about:blank', '_blank'); } catch {}
                     if (order.status !== 'delivered') {
-                      markAsDeliveredQuery(order, true, true);
+                      markAsDeliveredQuery(order, true, true, waWin);
                     } else {
-                      sendWhatsAppMessage(order, true);
+                      sendWhatsAppMessage(order, true, waWin);
                     }
                   }}
                   className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-xl text-xs transition shadow-sm flex items-center justify-center gap-2"
@@ -10508,10 +10683,12 @@ function App() {
                 onClick={() => {
                   const order = deliveringOrder;
                   setDeliveringOrder(null);
+                  let waWin = null;
+                  try { waWin = window.open('about:blank', '_blank'); } catch {}
                   if (order.status !== 'delivered') {
-                    markAsDeliveredQuery(order, false, true);
+                    markAsDeliveredQuery(order, false, true, waWin);
                   } else {
-                    sendWhatsAppMessage(order, false);
+                    sendWhatsAppMessage(order, false, waWin);
                   }
                 }}
                 className={`w-full py-3 font-semibold rounded-xl text-xs transition flex items-center justify-center gap-2 ${

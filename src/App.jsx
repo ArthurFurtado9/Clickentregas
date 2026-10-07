@@ -4208,7 +4208,10 @@ function App() {
             <div className="max-w-3xl mx-auto px-4 py-4 flex items-center justify-between">
               <button 
                 onClick={() => {
-                  if (user) {
+                  window.history.replaceState({}, '', window.location.pathname)
+                  if (user?.isAdmin) {
+                    setPage('admin')
+                  } else if (user) {
                     setPage('catalog')
                   } else {
                     setPage('login')
@@ -4217,7 +4220,7 @@ function App() {
                 className="flex items-center gap-2 text-slate-500 hover:text-slate-800 transition font-medium text-sm"
               >
                 <ArrowLeft className="w-4 h-4" />
-                {user ? 'Voltar ao Catálogo' : 'Acessar Loja'}
+                {user?.isAdmin ? 'Voltar ao Painel Admin' : (user ? 'Voltar ao Catálogo' : 'Acessar Loja')}
               </button>
               <span className="font-bold text-slate-800 text-base">Acompanhar Pedido</span>
               <div className="w-20"></div>

@@ -562,6 +562,7 @@ function App() {
   const [financeFilter, setFinanceFilter] = useState('7d')
   
   const pixFileInputRef = useRef(null)
+  const autoRenewedPixRef = useRef({})
 
   const showConfirm = (title, message, onConfirm, onCancel = null, confirmText = 'Confirmar', cancelText = 'Cancelar') => {
     setConfirmModal({
@@ -759,6 +760,15 @@ function App() {
           }
           return data
         })
+
+        // Se o pedido ainda não foi pago e o Pix anterior expirou, renova automaticamente
+        if (data.payment_status !== 'paid' && data.pix_copia_cola && data.pix_expires_at) {
+          const isExpired = new Date(data.pix_expires_at) <= new Date()
+          if (isExpired && !autoRenewedPixRef.current[data.id]) {
+            autoRenewedPixRef.current[data.id] = true
+            handleGenerateMpPix(data.id)
+          }
+        }
       }
     } catch (err) {
       console.error('Erro ao carregar detalhes do pedido:', err.message)
@@ -4265,83 +4275,92 @@ function App() {
                   </h4>
                 </div>
 
-                {/* Se o pedido já tem o Pix dinâmico gerado pelo Mercado Pago */}
-                {order.pix_copia_cola ? (
-                  <div className="space-y-4">
-                    <p className="text-xs text-slate-700 text-center leading-relaxed">
-                      Escaneie o QR Code abaixo no app do seu banco ou copie o código Pix. O pedido será <strong>confirmado automaticamente</strong> assim que você pagar!
-                    </p>
+                {(() => {
+                  const isPixExpired = order.pix_expires_at && new Date(order.pix_expires_at) <= new Date()
+                  const hasValidPix = order.pix_copia_cola && !isPixExpired
 
-                    <div className={`${theme.inputBg} border ${theme.lightBorder} p-5 rounded-2xl flex flex-col items-center gap-4`}>
-                      {order.pix_qr_code ? (
-                        <div className="relative group">
-                          <img 
-                            src={`data:image/png;base64,${order.pix_qr_code}`}
-                            alt="QR Code Pix Mercado Pago"
-                            className="w-48 h-48 bg-white p-2.5 rounded-xl border border-slate-200 shadow-sm"
-                          />
-                        </div>
-                      ) : (
-                        <img 
-                          src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(order.pix_copia_cola)}`}
-                          alt="QR Code Pix"
-                          className="w-48 h-48 bg-white p-2.5 rounded-xl border border-slate-200 shadow-sm"
-                        />
-                      )}
+                  if (hasValidPix) {
+                    return (
+                      <div className="space-y-4">
+                        <p className="text-xs text-slate-700 text-center leading-relaxed">
+                          Escaneie o QR Code abaixo no app do seu banco ou copie o código Pix. O pedido será <strong>confirmado automaticamente</strong> assim que você pagar!
+                        </p>
 
-                      <div className="w-full space-y-1.5">
-                        <span className="block text-xxs font-semibold text-slate-400 uppercase tracking-wider font-mono">
-                          Código Pix Copia e Cola
-                        </span>
-                        <div className="flex gap-2 w-full">
-                          <input
-                            type="text"
-                            readOnly
-                            value={order.pix_copia_cola}
-                            className="flex-1 bg-white border border-slate-200 px-3 py-2.5 rounded-xl text-xs font-mono select-all focus:outline-none shadow-inner text-slate-800"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => {
-                              navigator.clipboard.writeText(order.pix_copia_cola)
-                              addToast('Código Pix copiado com sucesso!', 'success')
-                            }}
-                            className={`px-4 py-2.5 text-white font-bold rounded-xl text-xs transition shadow-sm flex items-center gap-1.5 shrink-0 ${theme.bg} ${theme.hoverBg}`}
-                          >
-                            <Copy className="w-3.5 h-3.5" />
-                            <span>Copiar Pix</span>
-                          </button>
+                        <div className={`${theme.inputBg} border ${theme.lightBorder} p-5 rounded-2xl flex flex-col items-center gap-4`}>
+                          {order.pix_qr_code ? (
+                            <div className="relative group">
+                              <img 
+                                src={`data:image/png;base64,${order.pix_qr_code}`}
+                                alt="QR Code Pix Mercado Pago"
+                                className="w-48 h-48 bg-white p-2.5 rounded-xl border border-slate-200 shadow-sm"
+                              />
+                            </div>
+                          ) : (
+                            <img 
+                              src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(order.pix_copia_cola)}`}
+                              alt="QR Code Pix"
+                              className="w-48 h-48 bg-white p-2.5 rounded-xl border border-slate-200 shadow-sm"
+                            />
+                          )}
+
+                          <div className="w-full space-y-1.5">
+                            <span className="block text-xxs font-semibold text-slate-400 uppercase tracking-wider font-mono">
+                              Código Pix Copia e Cola
+                            </span>
+                            <div className="flex gap-2 w-full">
+                              <input
+                                type="text"
+                                readOnly
+                                value={order.pix_copia_cola}
+                                className="flex-1 bg-white border border-slate-200 px-3 py-2.5 rounded-xl text-xs font-mono select-all focus:outline-none shadow-inner text-slate-800"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  navigator.clipboard.writeText(order.pix_copia_cola)
+                                  addToast('Código Pix copiado com sucesso!', 'success')
+                                }}
+                                className={`px-4 py-2.5 text-white font-bold rounded-xl text-xs transition shadow-sm flex items-center gap-1.5 shrink-0 ${theme.bg} ${theme.hoverBg}`}
+                              >
+                                <Copy className="w-3.5 h-3.5" />
+                                <span>Copiar Pix</span>
+                              </button>
+                            </div>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  </div>
-                ) : (
-                  /* Se ainda não gerou a cobrança do Mercado Pago, exibe botão para gerar instantâneo */
-                  <div className="space-y-4 text-center">
-                    <p className="text-xs text-slate-600 leading-relaxed max-w-md mx-auto">
-                      Clique no botão abaixo para gerar o seu QR Code Pix.
-                    </p>
+                    )
+                  }
 
-                    <button
-                      type="button"
-                      disabled={generatingMpPix}
-                      onClick={() => handleGenerateMpPix(order.id)}
-                      className={`w-full max-w-sm mx-auto py-3.5 px-6 text-white font-bold rounded-xl text-sm transition shadow-md flex items-center justify-center gap-2 ${theme.bg} ${theme.hoverBg} disabled:opacity-50`}
-                    >
-                      {generatingMpPix ? (
-                        <>
-                          <RefreshCw className="w-4 h-4 animate-spin" />
-                          <span>Gerando QR Code Pix...</span>
-                        </>
-                      ) : (
-                        <>
-                          <DollarSign className="w-4 h-4" />
-                          <span>Pagar com Pix (R$ {order.total_price.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})</span>
-                        </>
-                      )}
-                    </button>
-                  </div>
-                )}
+                  return (
+                    <div className="space-y-4 text-center">
+                      <p className="text-xs text-slate-600 leading-relaxed max-w-md mx-auto">
+                        {isPixExpired 
+                          ? 'O código Pix anterior expirou após o prazo. Clique no botão abaixo para gerar um novo QR Code Pix atualizado.' 
+                          : 'Clique no botão abaixo para gerar o seu QR Code Pix.'}
+                      </p>
+
+                      <button
+                        type="button"
+                        disabled={generatingMpPix}
+                        onClick={() => handleGenerateMpPix(order.id)}
+                        className={`w-full max-w-sm mx-auto py-3.5 px-6 text-white font-bold rounded-xl text-sm transition shadow-md flex items-center justify-center gap-2 ${theme.bg} ${theme.hoverBg} disabled:opacity-50`}
+                      >
+                        {generatingMpPix ? (
+                          <>
+                            <RefreshCw className="w-4 h-4 animate-spin" />
+                            <span>{isPixExpired ? 'Gerando Novo QR Code...' : 'Gerando QR Code Pix...'}</span>
+                          </>
+                        ) : (
+                          <>
+                            <DollarSign className="w-4 h-4" />
+                            <span>{isPixExpired ? 'Gerar Novo QR Code Pix' : 'Pagar com Pix'} (R$ {order.total_price.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  )
+                })()}
               </div>
             )}
 

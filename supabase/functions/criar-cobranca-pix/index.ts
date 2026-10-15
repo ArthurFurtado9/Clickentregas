@@ -100,7 +100,8 @@ serve(async (req) => {
     const clientEmail = `cliente_${customerIdentifier}@clickentregas.com`
     const shortId = order.id.substring(0, 8).toUpperCase()
 
-    const expirationDate = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() // 24 horas
+    // 5 dias de validade (120 horas) para garantir que o cliente possa pagar sem risco de expiração rápida
+    const expirationDate = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString()
 
     const mpPayload = {
       transaction_amount: amount,

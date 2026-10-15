@@ -126,9 +126,15 @@ serve(async (req) => {
       console.log(`[Webhook MP] SUCESSO: Pedido ${order.id} marcado como PAGO automaticamente!`)
     }
 
-    // Sempre retorna HTTP 200 para o Mercado Pago não ficar reenviando o mesmo webhook
     return new Response(
-      JSON.stringify({ success: true, payment_status: payment.status }),
+      JSON.stringify({ 
+        success: true, 
+        payment_status: payment.status, 
+        status_detail: payment.status_detail,
+        date_created: payment.date_created,
+        date_of_expiration: payment.date_of_expiration,
+        date_last_updated: payment.date_last_updated
+      }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     )
   } catch (err) {

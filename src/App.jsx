@@ -725,8 +725,12 @@ function App() {
   }
 
   // Load Single Order details for tracking
-  const loadTrackingOrder = async (orderId, silent = false) => {
-    if (!orderId) return
+  const loadTrackingOrder = async (rawOrderId, silent = false) => {
+    if (!rawOrderId) return
+    const cleanHex = String(rawOrderId).trim().replace(/-/g, '')
+    const orderId = /^[0-9a-fA-F]{32}$/.test(cleanHex)
+      ? `${cleanHex.slice(0, 8)}-${cleanHex.slice(8, 12)}-${cleanHex.slice(12, 16)}-${cleanHex.slice(16, 20)}-${cleanHex.slice(20, 32)}`.toLowerCase()
+      : String(rawOrderId).trim()
     try {
       if (!silent) setTrackingLoading(true)
       if (!silent) setTrackingError(null)
@@ -910,8 +914,11 @@ function App() {
         else setWhatHappensNowText(`O que acontece agora?\n\n1. O dono irá confirmar os itens do pedido.\n\n2. Caso haja itens fracionados (ex: queijo), eles serão pesados e o valor ajustado.\n\n3. Assim que o entregador sair, o cliente receberá uma notificação no WhatsApp.`)
 
         const pmt = data.find(item => item.key === 'pix_message_template')
-        if (pmt) setPixMessageTemplate(pmt.value)
-        else setPixMessageTemplate('Olá! Segue o link para pagamento do seu pedido #{pedido_id} via Pix no valor de R$ {total}. Link: {link_pagamento}')
+        if (pmt && pmt.value && pmt.value.trim() !== 'Segue link para pagamento via PIX: {link_pagamento}') {
+          setPixMessageTemplate(pmt.value)
+        } else {
+          setPixMessageTemplate('Clique no link abaixo para abrir o QR Code e o código Pix:\n{link_pagamento}')
+        }
 
         const sak = data.find(item => item.key === 'sms_api_key')
         if (sak) setSmsApiKey(sak.value || 'textbelt')
@@ -937,7 +944,7 @@ function App() {
         setWhatsappTemplate('Olá {nome}! Seu pedido #{pedido_id} foi entregue. Total: R$ {total}. Agradecemos a preferência!')
         setWhatsappTemplateNoCharge('Olá {nome}! Seu pedido #{pedido_id} foi entregue. Agradecemos a preferência!')
         setWhatHappensNowText(`O que acontece agora?\n\n1. O dono irá confirmar os itens do pedido.\n\n2. Caso haja itens fracionados (ex: queijo), eles serão pesados e o valor ajustado.\n\n3. Assim que o entregador sair, o cliente receberá uma notificação no WhatsApp.`)
-        setPixMessageTemplate('Olá! Segue o link para pagamento do seu pedido #{pedido_id} via Pix no valor de R$ {total}. Link: {link_pagamento}')
+        setPixMessageTemplate('Clique no link abaixo para abrir o QR Code e o código Pix:\n{link_pagamento}')
       }
     } catch (err) {
       console.error('Erro ao carregar configurações:', err.message)
@@ -3838,11 +3845,18 @@ function App() {
         valor: order.total_price
       }) : pixKey);
 
-      pixMessage = pixMessageTemplate
+      const cleanOrderId = String(order.id).replace(/-/g, '')
+      const paymentTrackingLink = `${window.location.origin}/?pedido=${cleanOrderId}${includeCharge ? '' : '&cobrar=false'}`
+
+      const effectivePixTemplate = (!pixMessageTemplate || pixMessageTemplate.trim() === 'Segue link para pagamento via PIX: {link_pagamento}')
+        ? 'Clique no link abaixo para abrir o QR Code e o código Pix:\n{link_pagamento}'
+        : pixMessageTemplate
+
+      pixMessage = effectivePixTemplate
         .replace(/{pedido_id}/g, order.id.substring(0, 8).toUpperCase())
         .replace(/R\$\s*{total}/g, `*R$ ${order.total_price.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}*`)
         .replace(/{total}/g, `*R$ ${order.total_price.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}*`)
-        .replace(/{link_pagamento}/g, `${window.location.origin}/?pedido=${order.id}${includeCharge ? '' : '&cobrar=false'}`)
+        .replace(/{link_pagamento}/g, paymentTrackingLink)
         .replace(/{chave_pix}/g, pixKey || 'Mercado Pago Pix')
         .replace(/{copia_cola}/g, pixCodeToUse);
     }
@@ -3881,9 +3895,12 @@ function App() {
       formattedMsg += `\n\n${pixMessage}`
     }
 
-    const trackingLink = `${window.location.origin}/?pedido=${order.id}${includeCharge ? '' : '&cobrar=false'}`
+    const cleanOrderId = String(order.id).replace(/-/g, '')
+    const trackingLink = `${window.location.origin}/?pedido=${cleanOrderId}${includeCharge ? '' : '&cobrar=false'}`
     if (!formattedMsg.includes(trackingLink)) {
-      formattedMsg += `\n\n*Acompanhe seu pedido / QR Code Pix:*\n${trackingLink}`
+      formattedMsg += includeCharge
+        ? `\n\n*Clique no link abaixo para abrir o QR Code e o código Pix:*\n${trackingLink}`
+        : `\n\n*Acompanhe seu pedido:*\n${trackingLink}`
     }
 
     const phoneClean = (order.customers?.phone || '').replace(/\D/g, '').replace(/^0+/, '')

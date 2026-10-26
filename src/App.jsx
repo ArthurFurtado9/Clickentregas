@@ -914,10 +914,15 @@ function App() {
         else setWhatHappensNowText(`O que acontece agora?\n\n1. O dono irá confirmar os itens do pedido.\n\n2. Caso haja itens fracionados (ex: queijo), eles serão pesados e o valor ajustado.\n\n3. Assim que o entregador sair, o cliente receberá uma notificação no WhatsApp.`)
 
         const pmt = data.find(item => item.key === 'pix_message_template')
-        if (pmt && pmt.value && pmt.value.trim() !== 'Segue link para pagamento via PIX: {link_pagamento}') {
+        const isLegacyLinkTemplate = pmt?.value && (
+          pmt.value.trim() === 'Segue link para pagamento via PIX: {link_pagamento}' ||
+          pmt.value.trim() === 'Clique no link abaixo para abrir o QR Code e o código Pix:\n{link_pagamento}' ||
+          pmt.value.includes('{link_pagamento}')
+        )
+        if (pmt && pmt.value && !isLegacyLinkTemplate) {
           setPixMessageTemplate(pmt.value)
         } else {
-          setPixMessageTemplate('Clique no link abaixo para abrir o QR Code e o código Pix:\n{link_pagamento}')
+          setPixMessageTemplate('Segue código Pix Copia e Cola para pagamento:\n{copia_cola}')
         }
 
         const sak = data.find(item => item.key === 'sms_api_key')
@@ -944,7 +949,7 @@ function App() {
         setWhatsappTemplate('Olá {nome}! Seu pedido #{pedido_id} foi entregue. Total: R$ {total}. Agradecemos a preferência!')
         setWhatsappTemplateNoCharge('Olá {nome}! Seu pedido #{pedido_id} foi entregue. Agradecemos a preferência!')
         setWhatHappensNowText(`O que acontece agora?\n\n1. O dono irá confirmar os itens do pedido.\n\n2. Caso haja itens fracionados (ex: queijo), eles serão pesados e o valor ajustado.\n\n3. Assim que o entregador sair, o cliente receberá uma notificação no WhatsApp.`)
-        setPixMessageTemplate('Clique no link abaixo para abrir o QR Code e o código Pix:\n{link_pagamento}')
+        setPixMessageTemplate('Segue código Pix Copia e Cola para pagamento:\n{copia_cola}')
       }
     } catch (err) {
       console.error('Erro ao carregar configurações:', err.message)
@@ -3820,7 +3825,8 @@ function App() {
 
     // Se a cobrança está ativa, tenta gerar ou reaproveitar o Pix automático do Mercado Pago
     if (includeCharge) {
-      if (!mpCopiaCola) {
+      const isPixExpired = order.pix_expires_at && new Date(order.pix_expires_at) <= new Date()
+      if (!mpCopiaCola || isPixExpired) {
         try {
           const { data: pixRes } = await supabase.functions.invoke('criar-cobranca-pix', {
             body: { order_id: order.id }
@@ -3848,8 +3854,12 @@ function App() {
       const cleanOrderId = String(order.id).replace(/-/g, '')
       const paymentTrackingLink = `${window.location.origin}/?pedido=${cleanOrderId}${includeCharge ? '' : '&cobrar=false'}`
 
-      const effectivePixTemplate = (!pixMessageTemplate || pixMessageTemplate.trim() === 'Segue link para pagamento via PIX: {link_pagamento}')
-        ? 'Clique no link abaixo para abrir o QR Code e o código Pix:\n{link_pagamento}'
+      const isLegacyPixTemplate = !pixMessageTemplate ||
+        pixMessageTemplate.trim() === 'Segue link para pagamento via PIX: {link_pagamento}' ||
+        pixMessageTemplate.trim() === 'Clique no link abaixo para abrir o QR Code e o código Pix:\n{link_pagamento}' ||
+        pixMessageTemplate.includes('{link_pagamento}')
+      const effectivePixTemplate = isLegacyPixTemplate
+        ? 'Segue código Pix Copia e Cola para pagamento:\n{copia_cola}'
         : pixMessageTemplate
 
       pixMessage = effectivePixTemplate
@@ -3893,14 +3903,6 @@ function App() {
 
     if (includeCharge && !templateToUse.includes('{pix}') && pixMessage) {
       formattedMsg += `\n\n${pixMessage}`
-    }
-
-    const cleanOrderId = String(order.id).replace(/-/g, '')
-    const trackingLink = `${window.location.origin}/?pedido=${cleanOrderId}${includeCharge ? '' : '&cobrar=false'}`
-    if (!formattedMsg.includes(trackingLink)) {
-      formattedMsg += includeCharge
-        ? `\n\n*Clique no link abaixo para abrir o QR Code e o código Pix:*\n${trackingLink}`
-        : `\n\n*Acompanhe seu pedido:*\n${trackingLink}`
     }
 
     const phoneClean = (order.customers?.phone || '').replace(/\D/g, '').replace(/^0+/, '')
@@ -8205,7 +8207,7 @@ function App() {
                           <p><code>{`{total}`}</code> : Preço total do pedido</p>
                           <p><code>{`{endereco}`}</code> : Endereço completo</p>
                           <p><code>{`{pix}`}</code> : Chave/QR code do Pix</p>
-                          <p><code>{`{link_pagamento}`}</code> : Link do rastreio/Pix (apenas na msg do Pix)</p>
+                          <p><code>{`{copia_cola}`}</code> : Código Pix Copia e Cola (apenas na msg do Pix)</p>
                           <p className="col-span-2"><code>{`{itens}`}</code> : Lista dos produtos no formato: <br />- Item: Qtd (Preço)</p>
                         </div>
                       </div>

@@ -100,8 +100,8 @@ serve(async (req) => {
     const clientEmail = `cliente_${customerIdentifier}@clickentregas.com`
     const shortId = order.id.substring(0, 8).toUpperCase()
 
-    // 5 dias de validade (120 horas) para garantir que o cliente possa pagar sem risco de expiração rápida
-    const expirationDate = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString()
+    // 30 dias de validade (máximo permitido pelo Mercado Pago, com 5 min de margem para evitar erro de fuso/latência)
+    const expirationDate = new Date(Date.now() + (30 * 24 * 60 * 60 * 1000) - (5 * 60 * 1000)).toISOString()
 
     const mpPayload = {
       transaction_amount: amount,

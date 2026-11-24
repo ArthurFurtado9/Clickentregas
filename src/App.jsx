@@ -7132,28 +7132,67 @@ function App() {
               </div>
 
               {/* Subdivision for Delivered Orders: Paid vs. Awaiting Payment */}
-              {adminOrderSubTab === 'delivered' && (
-                <div className="flex gap-2 p-1.5 bg-slate-100 rounded-xl w-fit border border-slate-200/40">
-                  <button
-                    onClick={() => setAdminOrderPaymentFilter('all')}
-                    className={`px-3 py-1.5 rounded-lg font-bold text-xxs uppercase tracking-wider transition ${adminOrderPaymentFilter === 'all' ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
-                  >
-                    Todos ({orders.filter(o => o.status === 'delivered').length})
-                  </button>
-                  <button
-                    onClick={() => setAdminOrderPaymentFilter('pending')}
-                    className={`px-3 py-1.5 rounded-lg font-bold text-xxs uppercase tracking-wider transition ${adminOrderPaymentFilter === 'pending' ? 'bg-white text-red-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
-                  >
-                    Pagamento Pendente ({orders.filter(o => o.status === 'delivered' && o.payment_status !== 'paid').length})
-                  </button>
-                  <button
-                    onClick={() => setAdminOrderPaymentFilter('paid')}
-                    className={`px-3 py-1.5 rounded-lg font-bold text-xxs uppercase tracking-wider transition ${adminOrderPaymentFilter === 'paid' ? 'bg-white text-emerald-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
-                  >
-                    Pagos ({orders.filter(o => o.status === 'delivered' && o.payment_status === 'paid').length})
-                  </button>
-                </div>
-              )}
+              {adminOrderSubTab === 'delivered' && (() => {
+                const deliveredPendingAll = orders.filter(o => o.status === 'delivered' && o.payment_status !== 'paid');
+                const deliveredPendingFiltered = deliveredPendingAll.filter(order => {
+                  const clientName = order.customers?.name || '';
+                  const matchesSearch = clientName.toLowerCase().includes(orderSearchQuery.toLowerCase());
+                  let matchesGroup = true;
+                  if (adminOrderGroupFilter === 'none') {
+                    matchesGroup = !order.customers?.group_name;
+                  } else if (adminOrderGroupFilter !== 'all') {
+                    matchesGroup = order.customers?.group_name && order.customers.group_name.trim().toLowerCase() === adminOrderGroupFilter.trim().toLowerCase();
+                  }
+                  return matchesSearch && matchesGroup;
+                });
+                const pendingTotalAll = deliveredPendingAll.reduce((sum, o) => sum + parseFloat(o.total_price || 0), 0);
+                const pendingTotalFiltered = deliveredPendingFiltered.reduce((sum, o) => sum + parseFloat(o.total_price || 0), 0);
+                const hasExtraFilter = orderSearchQuery.trim() !== '' || adminOrderGroupFilter !== 'all';
+
+                return (
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex gap-2 p-1.5 bg-slate-100 rounded-xl w-fit border border-slate-200/40">
+                      <button
+                        onClick={() => setAdminOrderPaymentFilter('all')}
+                        className={`px-3 py-1.5 rounded-lg font-bold text-xxs uppercase tracking-wider transition ${adminOrderPaymentFilter === 'all' ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
+                      >
+                        Todos ({orders.filter(o => o.status === 'delivered').length})
+                      </button>
+                      <button
+                        onClick={() => setAdminOrderPaymentFilter('pending')}
+                        className={`px-3 py-1.5 rounded-lg font-bold text-xxs uppercase tracking-wider transition ${adminOrderPaymentFilter === 'pending' ? 'bg-white text-red-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
+                      >
+                        Pagamento Pendente ({deliveredPendingAll.length})
+                      </button>
+                      <button
+                        onClick={() => setAdminOrderPaymentFilter('paid')}
+                        className={`px-3 py-1.5 rounded-lg font-bold text-xxs uppercase tracking-wider transition ${adminOrderPaymentFilter === 'paid' ? 'bg-white text-emerald-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
+                      >
+                        Pagos ({orders.filter(o => o.status === 'delivered' && o.payment_status === 'paid').length})
+                      </button>
+                    </div>
+
+                    {adminOrderPaymentFilter === 'pending' && (
+                      <div className="flex flex-wrap items-center gap-2.5 bg-red-50 border border-red-200/80 px-4 py-2 rounded-xl shadow-xs">
+                        <DollarSign className="w-4 h-4 text-red-600 shrink-0" />
+                        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                          <span className="text-xxs font-bold text-red-700 uppercase tracking-wider">
+                            Total Pendente ({deliveredPendingFiltered.length} {deliveredPendingFiltered.length === 1 ? 'pedido' : 'pedidos'}):
+                          </span>
+                          <span className="text-sm font-extrabold text-red-700 font-mono">
+                            R$ {pendingTotalFiltered.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </span>
+                          {hasExtraFilter && deliveredPendingFiltered.length !== deliveredPendingAll.length && (
+                            <span className="text-xxs text-red-500 font-mono font-semibold">
+                              (Geral: R$ {pendingTotalAll.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
 
               {orders.length === 0 ? (
                 <div className="bg-white p-12 rounded-2xl border border-slate-100 text-center text-slate-400 max-w-md mx-auto">
@@ -9913,6 +9952,55 @@ function App() {
         {/* TAB 5: FINANCEIRO */}
         {adminTab === 'financeiro' && (
           <div className="space-y-6">
+            {(() => {
+              const paidDeliveredOrders = orders.filter(o => o.status === 'delivered' && o.payment_status === 'paid');
+              const pendingPaymentOrders = orders.filter(o => o.status === 'delivered' && o.payment_status !== 'paid');
+              const pendingDeliveryOrders = orders.filter(o => o.status !== 'delivered' && o.status !== 'cancelled');
+
+              const totalPaidValue = paidDeliveredOrders.reduce((sum, o) => sum + parseFloat(o.total_price || 0), 0);
+              const totalPendingPaymentValue = pendingPaymentOrders.reduce((sum, o) => sum + parseFloat(o.total_price || 0), 0);
+              const totalPendingDeliveryValue = pendingDeliveryOrders.reduce((sum, o) => sum + parseFloat(o.total_price || 0), 0);
+
+              return (
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div className="bg-white border border-emerald-100 rounded-2xl p-5 shadow-sm flex flex-col justify-between">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xxs font-bold text-emerald-600 uppercase tracking-wider font-mono">Total Recebido (Pagos)</span>
+                      <span className="text-xxs bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-lg font-mono font-bold">
+                        {paidDeliveredOrders.length} {paidDeliveredOrders.length === 1 ? 'pedido' : 'pedidos'}
+                      </span>
+                    </div>
+                    <p className="text-2xl font-extrabold text-emerald-700 font-mono mt-2">
+                      R$ {totalPaidValue.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </p>
+                  </div>
+
+                  <div className="bg-white border border-red-200 rounded-2xl p-5 shadow-sm flex flex-col justify-between">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xxs font-bold text-red-600 uppercase tracking-wider font-mono">Pagamento Pendente</span>
+                      <span className="text-xxs bg-red-50 text-red-700 px-2 py-0.5 rounded-lg font-mono font-bold">
+                        {pendingPaymentOrders.length} {pendingPaymentOrders.length === 1 ? 'pedido' : 'pedidos'}
+                      </span>
+                    </div>
+                    <p className="text-2xl font-extrabold text-red-600 font-mono mt-2">
+                      R$ {totalPendingPaymentValue.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </p>
+                  </div>
+
+                  <div className="bg-white border border-amber-200 rounded-2xl p-5 shadow-sm flex flex-col justify-between">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xxs font-bold text-amber-600 uppercase tracking-wider font-mono">Pedidos Pendentes (Entrega)</span>
+                      <span className="text-xxs bg-amber-50 text-amber-700 px-2 py-0.5 rounded-lg font-mono font-bold">
+                        {pendingDeliveryOrders.length} {pendingDeliveryOrders.length === 1 ? 'pedido' : 'pedidos'}
+                      </span>
+                    </div>
+                    <p className="text-2xl font-extrabold text-amber-700 font-mono mt-2">
+                      R$ {totalPendingDeliveryValue.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </p>
+                  </div>
+                </div>
+              );
+            })()}
             <div className="grid grid-cols-1 gap-6">
               {/* inline chart implementation */}
               {(() => {
@@ -10805,14 +10893,21 @@ function App() {
         if (itemReportFilter === 'current') {
           targetOrders = filteredCurrentOrders;
         } else if (itemReportFilter === 'pending') {
-          targetOrders = orders.filter(o => o.status !== 'delivered' && !o.is_assembled);
+          targetOrders = orders.filter(o => o.status !== 'delivered' && !o.is_assembled && o.status !== 'cancelled');
         } else if (itemReportFilter === 'assembled') {
-          targetOrders = orders.filter(o => o.status !== 'delivered' && o.is_assembled);
+          targetOrders = orders.filter(o => o.status !== 'delivered' && o.is_assembled && o.status !== 'cancelled');
         } else if (itemReportFilter === 'delivered') {
           targetOrders = orders.filter(o => o.status === 'delivered');
+        } else if (itemReportFilter === 'payment_pending') {
+          targetOrders = orders.filter(o => o.status === 'delivered' && o.payment_status !== 'paid');
         } else {
           targetOrders = orders.filter(o => o.status !== 'cancelled');
         }
+
+        const validTargetOrders = targetOrders.filter(o => o.status !== 'cancelled');
+        const totalOrdersValue = validTargetOrders.reduce((sum, o) => sum + parseFloat(o.total_price || 0), 0);
+        const pendingOrdersInReport = validTargetOrders.filter(o => o.payment_status !== 'paid');
+        const totalPendingOrdersValue = pendingOrdersInReport.reduce((sum, o) => sum + parseFloat(o.total_price || 0), 0);
 
         const getEggTrayDetails = (name, totalQty) => {
           if (!name) return null;
@@ -10886,12 +10981,15 @@ function App() {
             pending: 'Entrega Pendente',
             assembled: 'Montados',
             delivered: 'Entregues',
+            payment_pending: 'Pagamento Pendente',
             all: 'Todos os Pedidos'
           };
 
           let text = `📋 *RELATÓRIO DE ITENS SOLICITADOS*\n`;
           text += `Contexto: ${filterLabelMap[itemReportFilter] || 'Geral'}\n`;
-          text += `Total de Pedidos: ${targetOrders.length}\n`;
+          text += `Total de Pedidos: ${validTargetOrders.length}\n`;
+          text += `💰 *Valor Total:* R$ ${totalOrdersValue.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}\n`;
+          text += `⏳ *Valor Pendente:* R$ ${totalPendingOrdersValue.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${pendingOrdersInReport.length} pedido${pendingOrdersInReport.length === 1 ? '' : 's'})\n`;
           text += `------------------------------------\n`;
 
           if (aggregatedList.length === 0) {
@@ -10979,11 +11077,37 @@ function App() {
                   Entregues ({orders.filter(o => o.status === 'delivered').length})
                 </button>
                 <button
+                  onClick={() => setItemReportFilter('payment_pending')}
+                  className={`px-3 py-1.5 rounded-lg font-semibold transition ${itemReportFilter === 'payment_pending' ? 'bg-white text-red-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
+                >
+                  Pag. Pendente ({orders.filter(o => o.status === 'delivered' && o.payment_status !== 'paid').length})
+                </button>
+                <button
                   onClick={() => setItemReportFilter('all')}
                   className={`px-3 py-1.5 rounded-lg font-semibold transition ${itemReportFilter === 'all' ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
                 >
                   Todos ({orders.filter(o => o.status !== 'cancelled').length})
                 </button>
+              </div>
+
+              {/* Financial Summary Bar inside Report Modal */}
+              <div className="grid grid-cols-2 gap-2.5">
+                <div className="bg-slate-50 border border-slate-200/80 rounded-xl px-3.5 py-2.5">
+                  <span className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider font-mono">
+                    Valor Total ({validTargetOrders.length} {validTargetOrders.length === 1 ? 'pedido' : 'pedidos'})
+                  </span>
+                  <span className="text-base font-extrabold text-slate-800 font-mono">
+                    R$ {totalOrdersValue.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </span>
+                </div>
+                <div className="bg-red-50 border border-red-200/80 rounded-xl px-3.5 py-2.5">
+                  <span className="block text-[10px] font-bold text-red-600 uppercase tracking-wider font-mono">
+                    Pedidos Pendentes ({pendingOrdersInReport.length} {pendingOrdersInReport.length === 1 ? 'pedido' : 'pedidos'})
+                  </span>
+                  <span className="text-base font-extrabold text-red-700 font-mono">
+                    R$ {totalPendingOrdersValue.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </span>
+                </div>
               </div>
 
               {/* Items List Content */}

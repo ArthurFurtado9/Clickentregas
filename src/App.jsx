@@ -3,7 +3,7 @@ import {
   ShoppingBag, ShoppingCart, Trash2, Plus, Minus, Check, Truck, 
   Settings, LogOut, Package, Edit, MapPin, User, Phone, ArrowLeft, 
   Search, FileText, X, ChevronRight, Info, ExternalLink, RefreshCw, PlusCircle, Calendar,
-  Star, Scale, CheckSquare, Square, TrendingUp, DollarSign, Undo2, MessageSquare, Tag, Users, ClipboardList, Copy, Bell, SlidersHorizontal, Sparkles, Egg, Layers, ReceiptText, Eye, EyeOff, Key, Lock, Edit3, Save, ChevronDown
+  Star, Scale, CheckSquare, Square, TrendingUp, DollarSign, Undo2, MessageSquare, Tag, Users, ClipboardList, Copy, Bell, SlidersHorizontal, Sparkles, Egg, Layers, ReceiptText, Eye, EyeOff, Key, Lock, Edit3, Save, ChevronDown, Store
 } from 'lucide-react'
 import { supabase, isSupabaseConfigured, updateSupabaseHeaders } from './supabaseClient'
 
@@ -14,6 +14,16 @@ const ADMIN_PHONE = import.meta.env.VITE_ADMIN_PHONE || ''
 const sanitizeText = (text, maxLength = 200) => {
   if (!text || typeof text !== 'string') return ''
   return text.replace(/[<>]/g, '').trim().substring(0, maxLength)
+}
+
+const isB2BCustomer = (c) => {
+  if (!c) return false
+  return c.recovery_code === 'B2B_PARTNER' || (c.group_name && c.group_name.trim().toUpperCase() === 'B2B')
+}
+
+const isInternalB2BPhone = (phone) => {
+  if (!phone) return true
+  return String(phone).startsWith('B2B')
 }
 
 const validatePhone = (phone) => {
@@ -379,6 +389,30 @@ function App() {
   const [itemReportCopied, setItemReportCopied] = useState(false)
   const [abandonedCartFilter, setAbandonedCartFilter] = useState('all') // 'all' | '15min'
   const [abandonedCartSearch, setAbandonedCartSearch] = useState('')
+
+  // "Fazer Pedido" (Escolher Cliente) Modal States
+  const [showPlaceOrderCustomerModal, setShowPlaceOrderCustomerModal] = useState(false)
+  const [placeOrderCustomerSearch, setPlaceOrderCustomerSearch] = useState('')
+  const [placeOrderCustomerGroupFilter, setPlaceOrderCustomerGroupFilter] = useState('all')
+  const [placeOrderModalTab, setPlaceOrderModalTab] = useState('clients') // 'clients' | 'b2b'
+
+  // B2B (Padarias) Module States
+  const [b2bSubTab, setB2bSubTab] = useState('orders') // 'orders' | 'clients'
+  const [b2bSearchQuery, setB2bSearchQuery] = useState('')
+  const [b2bSelectedClientFilter, setB2bSelectedClientFilter] = useState('all')
+  const [showB2BCustomerModal, setShowB2BCustomerModal] = useState(false)
+  const [editingB2BCustomer, setEditingB2BCustomer] = useState(null)
+  const [b2bCustomerForm, setB2bCustomerForm] = useState({ name: '', contact_name: '', phone: '', address: '' })
+  const [showB2BOrderModal, setShowB2BOrderModal] = useState(false)
+  const [b2bOrderCustomerId, setB2bOrderCustomerId] = useState('')
+  const [b2bOrderItems, setB2bOrderItems] = useState([])
+  const [b2bOrderNotes, setB2bOrderNotes] = useState('')
+  const [b2bOrderDiscount, setB2bOrderDiscount] = useState('')
+  const [b2bProductSearch, setB2bProductSearch] = useState('')
+  const [showB2BProductPicker, setShowB2BProductPicker] = useState(false)
+  const [b2bSelectedProduct, setB2bSelectedProduct] = useState(null)
+  const [b2bAddQty, setB2bAddQty] = useState(1)
+  const [b2bAddPrice, setB2bAddPrice] = useState('')
   
   // Weight Popup and Ratings States
   const [showWeightModal, setShowWeightModal] = useState(false)
@@ -833,7 +867,9 @@ function App() {
             name,
             phone,
             nickname,
-            group_name
+            group_name,
+            recovery_code,
+            street
           ),
           order_items (
             *,
@@ -2582,23 +2618,41 @@ function App() {
   }
 
   // Impersonate (Place order on behalf of client)
+  const startImpersonatingCustomer = (customer) => {
+    if (!customer) return
+    if (isB2BCustomer(customer)) {
+      setShowPlaceOrderCustomerModal(false)
+      openNewB2BOrderModal(customer)
+      return
+    }
+    setAdminProfile(user)
+    localStorage.setItem('clickentregas_admin_profile', JSON.stringify(user))
+
+    setIsAdminImpersonating(true)
+    localStorage.setItem('clickentregas_impersonating', 'true')
+
+    const clientUserObj = { ...customer, isAdmin: false }
+    setUser(clientUserObj)
+    localStorage.setItem('clickentregas_user', JSON.stringify(clientUserObj))
+    updateSupabaseHeaders()
+
+    setCart([])
+    setClientTab('catalog')
+    setSearchQuery('')
+    setShowPlaceOrderCustomerModal(false)
+    setPage('catalog')
+    addToast(`Fazendo pedido para ${customer.nickname || customer.name}`, 'success')
+  }
+
   const handleImpersonate = (customer) => {
+    if (isB2BCustomer(customer)) {
+      openNewB2BOrderModal(customer)
+      return
+    }
     showConfirm(
       'Fazer Pedido por Cliente',
-      `Deseja fazer um pedido em nome de ${customer.name}? Você será redirecionado para o cardápio do cliente.`,
-      () => {
-        setAdminProfile(user) // Save current admin user (Bruno)
-        localStorage.setItem('clickentregas_admin_profile', JSON.stringify(user))
-        
-        setIsAdminImpersonating(true)
-        localStorage.setItem('clickentregas_impersonating', 'true')
-        
-        setUser(customer) // Set current user to selected customer
-        localStorage.setItem('clickentregas_user', JSON.stringify(customer))
-        
-        setPage('catalog') // Redirect to client catalog
-        addToast(`Entrou no modo de simulação de ${customer.name}`, 'success')
-      }
+      `Deseja fazer um pedido em nome de ${customer.name}? Todos os produtos cadastrados estarão disponíveis para você adicionar.`,
+      () => startImpersonatingCustomer(customer)
     )
   }
 
@@ -2610,15 +2664,253 @@ function App() {
 
     setUser(adminProfile)
     localStorage.setItem('clickentregas_user', JSON.stringify(adminProfile))
-    
+
     setIsAdminImpersonating(false)
     localStorage.removeItem('clickentregas_impersonating')
-    
+
     setAdminProfile(null)
     localStorage.removeItem('clickentregas_admin_profile')
+    updateSupabaseHeaders()
 
     setCart([])
     setPage('admin')
+  }
+
+  // B2B (Padarias): Save or Update B2B Customer
+  const startEditB2BCustomer = (customer) => {
+    setEditingB2BCustomer(customer)
+    setB2bCustomerForm({
+      name: customer.name || '',
+      contact_name: customer.nickname || '',
+      phone: isInternalB2BPhone(customer.phone) ? '' : (customer.phone || ''),
+      address: customer.street || ''
+    })
+    setShowB2BCustomerModal(true)
+  }
+
+  const handleSaveB2BCustomer = async (e) => {
+    e.preventDefault()
+    if (!configured) return
+    const trimmedName = b2bCustomerForm.name.trim()
+    if (!trimmedName) {
+      showAlert('Nome Obrigatório', 'Informe o nome da padaria ou cliente B2B.')
+      return
+    }
+
+    const rawPhoneDigits = (b2bCustomerForm.phone || '').replace(/\D/g, '')
+    if (rawPhoneDigits && rawPhoneDigits.length < 10) {
+      showAlert('Telefone Inválido', 'Informe um telefone válido com DDD ou deixe o campo em branco.')
+      return
+    }
+
+    setAdminLoading(true)
+    try {
+      const phoneToSave = rawPhoneDigits
+        ? rawPhoneDigits
+        : (editingB2BCustomer && isInternalB2BPhone(editingB2BCustomer.phone)
+            ? editingB2BCustomer.phone
+            : 'B2B' + String(Date.now()).slice(-8))
+
+      if (rawPhoneDigits) {
+        const { data: existing, error: existError } = await supabase
+          .from('customers')
+          .select('id')
+          .eq('phone', rawPhoneDigits)
+          .maybeSingle()
+        if (existError) throw existError
+        if (existing && (!editingB2BCustomer || existing.id !== editingB2BCustomer.id)) {
+          showAlert('Telefone já cadastrado', 'Este número de telefone já pertence a outro cadastro.')
+          setAdminLoading(false)
+          return
+        }
+      }
+
+      if (editingB2BCustomer) {
+        const { error } = await supabase
+          .from('customers')
+          .update({
+            name: trimmedName,
+            nickname: b2bCustomerForm.contact_name.trim() || null,
+            phone: phoneToSave,
+            street: b2bCustomerForm.address.trim() || null,
+            group_name: 'B2B',
+            recovery_code: 'B2B_PARTNER'
+          })
+          .eq('id', editingB2BCustomer.id)
+        if (error) throw error
+        addToast('Cadastro B2B atualizado com sucesso!', 'success')
+      } else {
+        if (supabase) {
+          supabase.rest.headers.set('x-client-phone', phoneToSave)
+        }
+        const { error } = await supabase
+          .from('customers')
+          .insert([{
+            name: trimmedName,
+            nickname: b2bCustomerForm.contact_name.trim() || null,
+            phone: phoneToSave,
+            street: b2bCustomerForm.address.trim() || null,
+            group_name: 'B2B',
+            recovery_code: 'B2B_PARTNER'
+          }])
+        if (error) throw error
+        addToast('Padaria / Cliente B2B cadastrado com sucesso!', 'success')
+      }
+
+      setShowB2BCustomerModal(false)
+      setEditingB2BCustomer(null)
+      setB2bCustomerForm({ name: '', contact_name: '', phone: '', address: '' })
+      await loadAdminCustomers()
+    } catch (err) {
+      showAlert('Erro ao Salvar B2B', sanitizeErrorMessage(err))
+    } finally {
+      updateSupabaseHeaders()
+      setAdminLoading(false)
+    }
+  }
+
+  // B2B (Padarias): Open & Compute B2B Order (No payment / No WhatsApp)
+  const openNewB2BOrderModal = (preselectedCustomer = null) => {
+    const b2bClients = adminCustomers.filter(isB2BCustomer)
+    setB2bOrderCustomerId(preselectedCustomer?.id || b2bClients[0]?.id || '')
+    setB2bOrderItems([])
+    setB2bOrderNotes('')
+    setB2bOrderDiscount('')
+    setB2bProductSearch('')
+    setB2bSelectedProduct(null)
+    setB2bAddQty(1)
+    setShowB2BProductPicker(false)
+    setShowB2BOrderModal(true)
+  }
+
+  const handleAddB2BItem = () => {
+    if (!b2bSelectedProduct) return
+    const qty = parseFloat(String(b2bAddQty).replace(',', '.'))
+    if (isNaN(qty) || qty <= 0) {
+      showAlert('Quantidade Inválida', 'Informe uma quantidade maior que zero.')
+      return
+    }
+    const unitPrice = parseFloat(String(b2bAddPrice !== '' ? b2bAddPrice : b2bSelectedProduct.price).replace(',', '.'))
+    if (isNaN(unitPrice) || unitPrice < 0) {
+      showAlert('Valor Inválido', 'Informe um valor unitário válido (maior ou igual a zero).')
+      return
+    }
+
+    setB2bOrderItems(prev => {
+      const existingIdx = prev.findIndex(i => i.product_id === b2bSelectedProduct.id && i.price_unit === unitPrice)
+      if (existingIdx >= 0) {
+        return prev.map((item, idx) => {
+          if (idx !== existingIdx) return item
+          const nextQty = item.unit === 'kg' ? parseFloat((item.quantity + qty).toFixed(3)) : item.quantity + qty
+          return { ...item, quantity: nextQty }
+        })
+      }
+      return [
+        ...prev,
+        {
+          id: 'b2b_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+          product_id: b2bSelectedProduct.id,
+          product_name: b2bSelectedProduct.name,
+          product_image_url: b2bSelectedProduct.image_url || '',
+          unit: b2bSelectedProduct.unit || 'un',
+          price_unit: parseFloat(unitPrice.toFixed(2)),
+          quantity: b2bSelectedProduct.unit === 'kg' ? parseFloat(qty.toFixed(3)) : qty,
+          is_approximate: Boolean(b2bSelectedProduct.is_approximate)
+        }
+      ]
+    })
+
+    setB2bSelectedProduct(null)
+    setB2bProductSearch('')
+    setB2bAddQty(1)
+    setB2bAddPrice('')
+  }
+
+  const handleSaveB2BOrder = async (e) => {
+    if (e) e.preventDefault()
+    if (!configured) return
+    if (!b2bOrderCustomerId) {
+      showAlert('Selecione a Padaria', 'Por favor, selecione o cliente B2B / padaria para este pedido.')
+      return
+    }
+    if (b2bOrderItems.length === 0) {
+      showAlert('Pedido Vazio', 'Adicione pelo menos um produto para computar o pedido B2B.')
+      return
+    }
+
+    const b2bCustomer = adminCustomers.find(c => c.id === b2bOrderCustomerId)
+    if (!b2bCustomer) {
+      showAlert('Erro', 'Cliente B2B não encontrado.')
+      return
+    }
+
+    const subtotal = b2bOrderItems.reduce((sum, i) => sum + parseFloat((i.price_unit * i.quantity).toFixed(2)), 0)
+    const discountVal = Math.min(subtotal, Math.max(0, parseFloat(b2bOrderDiscount) || 0))
+    const finalTotal = parseFloat(Math.max(0, subtotal - discountVal).toFixed(2))
+
+    setAdminLoading(true)
+    try {
+      if (supabase && b2bCustomer.phone) {
+        supabase.rest.headers.set('x-client-phone', b2bCustomer.phone)
+      }
+
+      const { data: order, error: orderError } = await supabase
+        .from('orders')
+        .insert([{
+          customer_id: b2bCustomer.id,
+          status: 'delivered',
+          payment_status: 'paid',
+          is_assembled: true,
+          total_price: finalTotal,
+          delivery_address: b2bCustomer.street || 'Pedido B2B (Padaria)',
+          notes: b2bOrderNotes.trim() || null,
+          discount: discountVal
+        }])
+        .select()
+        .single()
+
+      if (orderError) throw orderError
+
+      const itemsPayload = b2bOrderItems.map(item => {
+        const lineTotal = parseFloat((item.price_unit * item.quantity).toFixed(2))
+        return {
+          order_id: order.id,
+          product_id: item.product_id,
+          quantity_requested: item.quantity,
+          quantity_final: item.quantity,
+          price_unit: item.price_unit,
+          price_final: lineTotal,
+          is_approximate: item.is_approximate
+        }
+      })
+
+      const { error: itemsError } = await supabase
+        .from('order_items')
+        .insert(itemsPayload)
+
+      if (itemsError) throw itemsError
+
+      for (const item of b2bOrderItems) {
+        const prodRef = products.find(p => p.id === item.product_id)
+        if (prodRef && prodRef.stock !== null && prodRef.stock !== undefined) {
+          await supabase.rpc('decrement_stock', { p_product_id: item.product_id, p_qty: item.quantity })
+        }
+      }
+
+      setShowB2BOrderModal(false)
+      setB2bOrderItems([])
+      setB2bOrderNotes('')
+      setB2bOrderDiscount('')
+      updateSupabaseHeaders()
+      await loadAdminOrders()
+      await loadProducts()
+      addToast('Pedido B2B computado com sucesso!', 'success')
+    } catch (err) {
+      showAlert('Erro ao Computar Pedido B2B', sanitizeErrorMessage(err))
+    } finally {
+      updateSupabaseHeaders()
+      setAdminLoading(false)
+    }
   }
 
   // Admin: Save customer
@@ -2649,6 +2941,9 @@ function App() {
         return
       }
 
+      if (supabase) {
+        supabase.rest.headers.set('x-client-phone', cleanPhone)
+      }
       const { error } = await supabase
         .from('customers')
         .insert([{ 
@@ -2667,6 +2962,7 @@ function App() {
     } catch (err) {
       showAlert('Erro', sanitizeErrorMessage(err))
     } finally {
+      updateSupabaseHeaders()
       setAdminLoading(false)
     }
   }
@@ -5297,7 +5593,7 @@ function App() {
   // 2. CATALOG & ORDERS PAGE (CLIENT / IMPERSONATED CLIENT)
   if (page === 'catalog') {
     const filteredProducts = products.filter(p => 
-      p.is_active && (
+      (isAdminImpersonating || user?.isAdmin || p.is_active) && (
         p.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
         (p.description && p.description.toLowerCase().includes(searchQuery.toLowerCase()))
       )
@@ -5531,6 +5827,11 @@ function App() {
                               {isOutOfStock && (
                                 <span className="bg-red-500 text-white text-xxs font-bold px-2 py-0.5 rounded-md uppercase shadow-xs">
                                   Esgotado
+                                </span>
+                              )}
+                              {!product.is_active && (isAdminImpersonating || user?.isAdmin) && (
+                                <span className="bg-slate-700/90 text-white text-xxs font-bold px-2 py-0.5 rounded-md shadow-xs font-mono">
+                                  Oculto no Catálogo
                                 </span>
                               )}
                             </div>
@@ -6839,11 +7140,16 @@ function App() {
 
             <div className="flex items-center gap-2">
               <button 
-                onClick={() => setPage('catalog')}
+                onClick={() => {
+                  setPlaceOrderCustomerSearch('')
+                  setPlaceOrderCustomerGroupFilter('all')
+                  setPlaceOrderModalTab('clients')
+                  setShowPlaceOrderCustomerModal(true)
+                }}
                 className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 rounded-xl text-white transition flex items-center gap-2 text-xs font-semibold shadow-md shadow-indigo-900/30"
               >
-                <ExternalLink className="w-3.5 h-3.5" />
-                <span>Ver como Cliente</span>
+                <ShoppingBag className="w-3.5 h-3.5" />
+                <span>Fazer Pedido</span>
               </button>
               <button 
                 onClick={triggerLogout}
@@ -6861,6 +7167,7 @@ function App() {
               {adminTab === 'orders' && <><FileText className="w-4.5 h-4.5 text-indigo-400" /> Todos os Pedidos</>}
               {adminTab === 'products' && <><Package className="w-4.5 h-4.5 text-indigo-400" /> Gerenciar Produtos</>}
               {adminTab === 'customers' && <><User className="w-4.5 h-4.5 text-indigo-400" /> Clientes</>}
+              {adminTab === 'b2b' && <><Store className="w-4.5 h-4.5 text-indigo-400" /> B2B (Padarias)</>}
               {adminTab === 'abandoned_carts' && <><ShoppingCart className="w-4.5 h-4.5 text-indigo-400" /> Carrinhos Não Finalizados</>}
               {adminTab === 'coupons' && <><Tag className="w-4.5 h-4.5 text-indigo-400" /> Cupons de Desconto</>}
               {adminTab === 'settings' && <><Settings className="w-4.5 h-4.5 text-indigo-400" /> Configurações Msg</>}
@@ -6901,9 +7208,16 @@ function App() {
               >
                 <User className="w-4 h-4" />
                 <span className="flex-1">Clientes</span>
-                {adminCustomers.some(c => c.profile_updated_pending) && (
+                {adminCustomers.some(c => !isB2BCustomer(c) && c.profile_updated_pending) && (
                   <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse shrink-0" />
                 )}
+              </button>
+              <button
+                onClick={() => { setAdminTab('b2b'); setMobileAdminMenuOpen(false); }}
+                className={`w-full py-3 px-4.5 text-left font-semibold text-xs transition uppercase tracking-wider flex items-center gap-3 rounded-xl ${adminTab === 'b2b' ? 'bg-indigo-600 text-white shadow-md shadow-indigo-900/40' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}
+              >
+                <Store className="w-4 h-4" />
+                <span>B2B (Padarias)</span>
               </button>
               <button
                 onClick={() => { setAdminTab('abandoned_carts'); setMobileAdminMenuOpen(false); }}
@@ -6978,9 +7292,16 @@ function App() {
               >
                 <User className="w-4 h-4" />
                 <span>Clientes</span>
-                {adminCustomers.some(c => c.profile_updated_pending) && (
+                {adminCustomers.some(c => !isB2BCustomer(c) && c.profile_updated_pending) && (
                   <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse shrink-0" title="Novas atualizações de cadastro!" />
                 )}
+              </button>
+              <button
+                onClick={() => setAdminTab('b2b')}
+                className={`py-3.5 border-b-2 font-semibold text-xs transition uppercase tracking-wider flex items-center gap-2 ${adminTab === 'b2b' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-400 hover:text-white'}`}
+              >
+                <Store className="w-4 h-4" />
+                <span>B2B (Padarias)</span>
               </button>
               <button
                 onClick={() => setAdminTab('abandoned_carts')}
@@ -7046,7 +7367,8 @@ function App() {
 
           {/* TAB 1: ORDERS */}
           {adminTab === 'orders' && (() => {
-            const uniqueOrderGroups = Array.from(new Set(adminCustomers.map(c => c.group_name).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'pt-BR'))
+            const b2cOrders = orders.filter(o => !isB2BCustomer(o.customers))
+            const uniqueOrderGroups = Array.from(new Set(adminCustomers.filter(c => !isB2BCustomer(c)).map(c => c.group_name).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'pt-BR'))
             return (
               <div className="space-y-6">
               <div className="flex items-center justify-between flex-wrap gap-4">
@@ -7079,19 +7401,19 @@ function App() {
                     onClick={() => setAdminOrderSubTab('pending')}
                     className={`px-4 py-2 rounded-lg font-semibold text-xs transition ${adminOrderSubTab === 'pending' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
                   >
-                    Entrega Pendente ({orders.filter(o => o.status !== 'delivered' && !o.is_assembled).length})
+                    Entrega Pendente ({b2cOrders.filter(o => o.status !== 'delivered' && !o.is_assembled).length})
                   </button>
                   <button
                     onClick={() => setAdminOrderSubTab('assembled')}
                     className={`px-4 py-2 rounded-lg font-semibold text-xs transition ${adminOrderSubTab === 'assembled' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
                   >
-                    Montados ({orders.filter(o => o.status !== 'delivered' && o.is_assembled).length})
+                    Montados ({b2cOrders.filter(o => o.status !== 'delivered' && o.is_assembled).length})
                   </button>
                   <button
                     onClick={() => setAdminOrderSubTab('delivered')}
                     className={`px-4 py-2 rounded-lg font-semibold text-xs transition ${adminOrderSubTab === 'delivered' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
                   >
-                    Entregues ({orders.filter(o => o.status === 'delivered').length})
+                    Entregues ({b2cOrders.filter(o => o.status === 'delivered').length})
                   </button>
                 </div>
 
@@ -7133,7 +7455,7 @@ function App() {
 
               {/* Subdivision for Delivered Orders: Paid vs. Awaiting Payment */}
               {adminOrderSubTab === 'delivered' && (() => {
-                const deliveredPendingAll = orders.filter(o => o.status === 'delivered' && o.payment_status !== 'paid');
+                const deliveredPendingAll = b2cOrders.filter(o => o.status === 'delivered' && o.payment_status !== 'paid');
                 const deliveredPendingFiltered = deliveredPendingAll.filter(order => {
                   const clientName = order.customers?.name || '';
                   const matchesSearch = clientName.toLowerCase().includes(orderSearchQuery.toLowerCase());
@@ -7156,7 +7478,7 @@ function App() {
                         onClick={() => setAdminOrderPaymentFilter('all')}
                         className={`px-3 py-1.5 rounded-lg font-bold text-xxs uppercase tracking-wider transition ${adminOrderPaymentFilter === 'all' ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
                       >
-                        Todos ({orders.filter(o => o.status === 'delivered').length})
+                        Todos ({b2cOrders.filter(o => o.status === 'delivered').length})
                       </button>
                       <button
                         onClick={() => setAdminOrderPaymentFilter('pending')}
@@ -7168,7 +7490,7 @@ function App() {
                         onClick={() => setAdminOrderPaymentFilter('paid')}
                         className={`px-3 py-1.5 rounded-lg font-bold text-xxs uppercase tracking-wider transition ${adminOrderPaymentFilter === 'paid' ? 'bg-white text-emerald-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
                       >
-                        Pagos ({orders.filter(o => o.status === 'delivered' && o.payment_status === 'paid').length})
+                        Pagos ({b2cOrders.filter(o => o.status === 'delivered' && o.payment_status === 'paid').length})
                       </button>
                     </div>
 
@@ -7194,7 +7516,7 @@ function App() {
                 );
               })()}
 
-              {orders.length === 0 ? (
+              {b2cOrders.length === 0 ? (
                 <div className="bg-white p-12 rounded-2xl border border-slate-100 text-center text-slate-400 max-w-md mx-auto">
                   <ShoppingCart className="w-12 h-12 mx-auto mb-3 text-slate-300" />
                   <p className="font-semibold text-slate-600 mb-1">Sem pedidos no momento</p>
@@ -7202,7 +7524,7 @@ function App() {
                 </div>
               ) : (
                 (() => {
-                  const filteredOrders = orders.filter((order) => {
+                  const filteredOrders = b2cOrders.filter((order) => {
                     let matchesTab = false;
                     if (adminOrderSubTab === 'pending') {
                       matchesTab = order.status !== 'delivered' && !order.is_assembled;
@@ -7659,8 +7981,9 @@ function App() {
 
           {/* TAB 3: CUSTOMERS */}
           {adminTab === 'customers' && (() => {
-            const uniqueGroups = Array.from(new Set(adminCustomers.map(c => c.group_name).filter(Boolean)))
-            const filteredCustomers = adminCustomers.filter(c => {
+            const regularCustomers = adminCustomers.filter(c => !isB2BCustomer(c))
+            const uniqueGroups = Array.from(new Set(regularCustomers.map(c => c.group_name).filter(Boolean)))
+            const filteredCustomers = regularCustomers.filter(c => {
               if (customerGroupFilter === 'all') return true
               if (customerGroupFilter === 'none') return !c.group_name
               return c.group_name && c.group_name.trim().toLowerCase() === customerGroupFilter.trim().toLowerCase()
@@ -7715,7 +8038,7 @@ function App() {
                     </select>
                   </div>
                   <div className="text-xxs text-slate-400 font-mono font-semibold">
-                    Mostrando {filteredCustomers.length} de {adminCustomers.length} clientes
+                    Mostrando {filteredCustomers.length} de {regularCustomers.length} clientes
                   </div>
                 </div>
 
@@ -7820,6 +8143,377 @@ function App() {
                       </table>
                     </div>
                   </div>
+                )}
+              </div>
+            )
+          })()}
+
+          {/* TAB: B2B (PADARIAS) */}
+          {adminTab === 'b2b' && (() => {
+            const b2bClients = adminCustomers.filter(isB2BCustomer)
+            const b2bOrders = orders.filter(o => isB2BCustomer(o.customers) && o.status !== 'cancelled')
+            const now = new Date()
+            const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1)
+            const b2bTotalAll = b2bOrders.reduce((sum, o) => sum + parseFloat(o.total_price || 0), 0)
+            const b2bTotalMonth = b2bOrders
+              .filter(o => new Date(o.created_at) >= currentMonthStart)
+              .reduce((sum, o) => sum + parseFloat(o.total_price || 0), 0)
+
+            const filteredB2BOrders = b2bOrders.filter(o => {
+              if (b2bSelectedClientFilter !== 'all' && o.customer_id !== b2bSelectedClientFilter) {
+                return false
+              }
+              if (b2bSearchQuery.trim()) {
+                const q = b2bSearchQuery.toLowerCase()
+                const cName = (o.customers?.name || '').toLowerCase()
+                const cNick = (o.customers?.nickname || '').toLowerCase()
+                const oId = (o.id || '').toLowerCase()
+                return cName.includes(q) || cNick.includes(q) || oId.includes(q)
+              }
+              return true
+            })
+
+            const filteredB2BTotal = filteredB2BOrders.reduce((sum, o) => sum + parseFloat(o.total_price || 0), 0)
+
+            const filteredB2BClients = b2bClients.filter(c => {
+              if (!b2bSearchQuery.trim()) return true
+              const q = b2bSearchQuery.toLowerCase()
+              return (
+                (c.name && c.name.toLowerCase().includes(q)) ||
+                (c.nickname && c.nickname.toLowerCase().includes(q)) ||
+                (!isInternalB2BPhone(c.phone) && c.phone.includes(q))
+              )
+            })
+
+            return (
+              <div className="space-y-6 animate-fade-in">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div>
+                    <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                      <Store className="w-5 h-5 text-indigo-600" />
+                      B2B — Padarias e Parceiros
+                    </h2>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      Cadastre clientes B2B e compute os pedidos diretamente para o Financeiro (sem envio de mensagens ou cobranças).
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2 self-start sm:self-auto">
+                    <button
+                      onClick={() => {
+                        setEditingB2BCustomer(null)
+                        setB2bCustomerForm({ name: '', contact_name: '', phone: '', address: '' })
+                        setShowB2BCustomerModal(true)
+                      }}
+                      className="py-2.5 px-4 bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold rounded-xl transition flex items-center gap-1.5 shadow-sm"
+                    >
+                      <PlusCircle className="w-4 h-4 text-indigo-400" />
+                      Cadastrar Padaria / B2B
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (b2bClients.length === 0) {
+                          setEditingB2BCustomer(null)
+                          setB2bCustomerForm({ name: '', contact_name: '', phone: '', address: '' })
+                          setShowB2BCustomerModal(true)
+                          addToast('Cadastre primeiro uma padaria/cliente B2B para computar pedidos.', 'info')
+                          return
+                        }
+                        openNewB2BOrderModal(null)
+                      }}
+                      className="py-2.5 px-4 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-xl transition flex items-center gap-1.5 shadow-sm shadow-indigo-100"
+                    >
+                      <ShoppingBag className="w-4 h-4" />
+                      Computar Pedido B2B
+                    </button>
+                  </div>
+                </div>
+
+                {/* B2B Summary Cards */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div className="bg-white border border-indigo-100 rounded-2xl p-5 shadow-sm">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xxs font-bold text-indigo-600 uppercase tracking-wider font-mono">Total Geral B2B</span>
+                      <span className="text-xxs bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-lg font-mono font-bold">
+                        {b2bOrders.length} {b2bOrders.length === 1 ? 'pedido' : 'pedidos'}
+                      </span>
+                    </div>
+                    <p className="text-2xl font-extrabold text-slate-900 font-mono mt-2">
+                      R$ {b2bTotalAll.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </p>
+                  </div>
+
+                  <div className="bg-white border border-emerald-100 rounded-2xl p-5 shadow-sm">
+                    <span className="text-xxs font-bold text-emerald-600 uppercase tracking-wider font-mono block">B2B no Mês Atual</span>
+                    <p className="text-2xl font-extrabold text-emerald-700 font-mono mt-2">
+                      R$ {b2bTotalMonth.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </p>
+                  </div>
+
+                  <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+                    <span className="text-xxs font-bold text-slate-500 uppercase tracking-wider font-mono block">Padarias Cadastradas</span>
+                    <p className="text-2xl font-extrabold text-slate-800 font-mono mt-2">
+                      {b2bClients.length}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Sub-tabs & Search/Filter */}
+                <div className="flex flex-col sm:flex-row gap-3 justify-between items-stretch sm:items-center bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">
+                  <div className="flex gap-2 p-1 bg-slate-100 rounded-xl w-fit">
+                    <button
+                      onClick={() => setB2bSubTab('orders')}
+                      className={`px-4 py-2 rounded-lg font-semibold text-xs transition ${b2bSubTab === 'orders' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
+                    >
+                      Pedidos Computados ({b2bOrders.length})
+                    </button>
+                    <button
+                      onClick={() => setB2bSubTab('clients')}
+                      className={`px-4 py-2 rounded-lg font-semibold text-xs transition ${b2bSubTab === 'clients' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
+                    >
+                      Padarias / Clientes B2B ({b2bClients.length})
+                    </button>
+                  </div>
+
+                  <div className="flex flex-wrap flex-1 max-w-xl gap-2.5 items-center justify-end">
+                    {b2bSubTab === 'orders' && (
+                      <select
+                        value={b2bSelectedClientFilter}
+                        onChange={(e) => setB2bSelectedClientFilter(e.target.value)}
+                        className="text-xs font-semibold bg-slate-50 border border-slate-200 px-3 py-2 rounded-xl text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                      >
+                        <option value="all">Todas as Padarias</option>
+                        {b2bClients.map(c => (
+                          <option key={c.id} value={c.id}>{c.name}</option>
+                        ))}
+                      </select>
+                    )}
+
+                    <div className="relative flex-1 min-w-[180px]">
+                      <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                      <input
+                        type="text"
+                        placeholder={b2bSubTab === 'orders' ? 'Buscar por padaria ou código...' : 'Buscar padaria...'}
+                        value={b2bSearchQuery}
+                        onChange={(e) => setB2bSearchQuery(e.target.value)}
+                        className="w-full pl-10 pr-8 py-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                      />
+                      {b2bSearchQuery && (
+                        <button
+                          onClick={() => setB2bSearchQuery('')}
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {b2bSubTab === 'orders' ? (
+                  <>
+                    {(b2bSelectedClientFilter !== 'all' || b2bSearchQuery.trim() !== '') && (
+                      <div className="flex items-center justify-between bg-indigo-50/80 border border-indigo-200/60 px-4 py-2.5 rounded-xl">
+                        <span className="text-xs font-bold text-indigo-800">
+                          Total dos pedidos filtrados ({filteredB2BOrders.length}):
+                        </span>
+                        <span className="text-sm font-extrabold text-indigo-700 font-mono">
+                          R$ {filteredB2BTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </span>
+                      </div>
+                    )}
+
+                    {filteredB2BOrders.length === 0 ? (
+                      <div className="bg-white p-12 rounded-2xl border border-slate-100 text-center text-slate-400 max-w-md mx-auto">
+                        <Store className="w-12 h-12 mx-auto mb-3 text-slate-300" />
+                        <p className="font-semibold text-slate-600 mb-1">Nenhum pedido B2B computado</p>
+                        <p className="text-xs text-slate-400">Clique em "Computar Pedido B2B" para registrar entregas às padarias.</p>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                        {filteredB2BOrders.map(order => {
+                          const dateFormatted = new Date(order.created_at).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+                          return (
+                            <div key={order.id} className="bg-white rounded-2xl border border-slate-100 p-5 shadow-sm space-y-4 flex flex-col justify-between">
+                              <div className="space-y-3">
+                                <div className="flex items-center justify-between gap-2 flex-wrap">
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-mono text-xxs bg-slate-100 text-slate-600 px-2 py-0.5 rounded font-semibold">
+                                      #{order.id.substring(0, 8).toUpperCase()}
+                                    </span>
+                                    <span className="bg-indigo-50 text-indigo-700 border border-indigo-100 text-xxs font-bold px-2 py-0.5 rounded-lg font-mono">
+                                      B2B Computado
+                                    </span>
+                                  </div>
+                                  <span className="text-xxs text-slate-400 font-mono">{dateFormatted}</span>
+                                </div>
+
+                                <div className="border-t border-slate-50 pt-2 space-y-1">
+                                  <p className="font-bold text-slate-800 text-sm flex items-center gap-1.5">
+                                    <Store className="w-4 h-4 text-indigo-500 shrink-0" />
+                                    {order.customers?.name || 'Padaria B2B'}
+                                  </p>
+                                  {order.customers?.nickname && (
+                                    <p className="text-xxs text-slate-500 pl-5.5">
+                                      Responsável: {order.customers.nickname}
+                                    </p>
+                                  )}
+                                  {!isInternalB2BPhone(order.customers?.phone) && (
+                                    <p className="text-xs text-slate-500 flex items-center gap-1.5 font-mono">
+                                      <Phone className="w-3.5 h-3.5 text-slate-400" />
+                                      {getFormattedPhone(order.customers?.phone)}
+                                    </p>
+                                  )}
+                                  {order.delivery_address && order.delivery_address !== 'Pedido B2B (Padaria)' && (
+                                    <p className="text-xs text-slate-500 flex items-start gap-1.5">
+                                      <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0 mt-0.5" />
+                                      <span>{order.delivery_address}</span>
+                                    </p>
+                                  )}
+                                  {order.notes && (
+                                    <p className="text-xxs bg-amber-50 text-amber-800 p-2 rounded-lg border border-amber-100/50 mt-1 font-mono">
+                                      <strong>Obs:</strong> {order.notes}
+                                    </p>
+                                  )}
+                                </div>
+
+                                <div className="bg-slate-50 p-3.5 rounded-xl space-y-1.5">
+                                  <span className="block text-xxs font-semibold text-slate-400 uppercase tracking-wider font-mono">Itens Computados</span>
+                                  <div className="divide-y divide-slate-100">
+                                    {(order.order_items || []).map(item => {
+                                      const qty = item.quantity_final !== null ? item.quantity_final : item.quantity_requested
+                                      const unit = item.products?.unit || 'un'
+                                      const lineVal = item.price_final !== null ? item.price_final : (item.price_unit * qty)
+                                      return (
+                                        <div key={item.id} className="py-1.5 flex items-center justify-between text-xs text-slate-700">
+                                          <span>{formatQuantity(qty, unit)} x {item.products?.name || 'Produto'}</span>
+                                          <span className="font-semibold text-slate-800 font-mono">
+                                            R$ {Number(lineVal).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                          </span>
+                                        </div>
+                                      )
+                                    })}
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="border-t border-slate-100 pt-3 flex items-center justify-between gap-3">
+                                <div>
+                                  <span className="text-xxs text-slate-400 block font-bold uppercase tracking-wider font-mono">Total Computado</span>
+                                  <div className="flex items-baseline gap-2">
+                                    <span className="text-lg font-black text-slate-900 font-mono">
+                                      R$ {Number(order.total_price || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                    </span>
+                                    {order.discount > 0 && (
+                                      <span className="text-xxs font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-lg font-mono">
+                                        -R$ {Number(order.discount).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center gap-1.5">
+                                  <button
+                                    onClick={() => startEditingOrder(order)}
+                                    className="py-1.5 px-3 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-semibold rounded-xl transition flex items-center gap-1.5"
+                                    title="Editar itens do pedido B2B"
+                                  >
+                                    <Edit3 className="w-3.5 h-3.5" />
+                                    Editar
+                                  </button>
+                                  <button
+                                    onClick={() => deleteOrder(order.id)}
+                                    className="p-2 hover:bg-red-50 text-slate-400 hover:text-red-600 rounded-xl transition"
+                                    title="Excluir registro B2B"
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    {filteredB2BClients.length === 0 ? (
+                      <div className="bg-white p-12 rounded-2xl border border-slate-100 text-center text-slate-400 max-w-md mx-auto">
+                        <Store className="w-12 h-12 mx-auto mb-3 text-slate-300" />
+                        <p className="font-semibold text-slate-600 mb-1">Nenhuma padaria B2B cadastrada</p>
+                        <p className="text-xs text-slate-400">Clique em "Cadastrar Padaria / B2B" no topo para adicionar.</p>
+                      </div>
+                    ) : (
+                      <div className="bg-white border border-slate-100 rounded-2xl overflow-hidden shadow-sm">
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left border-collapse">
+                            <thead>
+                              <tr className="bg-slate-50 border-b border-slate-100 text-slate-400 font-semibold font-mono text-xxs uppercase tracking-wider">
+                                <th className="py-3 px-4">Padaria / Empresa</th>
+                                <th className="py-3 px-4">Contato / Endereço</th>
+                                <th className="py-3 px-4">Pedidos</th>
+                                <th className="py-3 px-4">Total Acumulado</th>
+                                <th className="py-3 px-4 text-right">Ações</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 text-sm">
+                              {filteredB2BClients.map(client => {
+                                const clientB2BOrders = b2bOrders.filter(o => o.customer_id === client.id)
+                                const clientTotal = clientB2BOrders.reduce((s, o) => s + parseFloat(o.total_price || 0), 0)
+                                return (
+                                  <tr key={client.id} className="hover:bg-slate-50/50">
+                                    <td className="py-3.5 px-4">
+                                      <span className="font-bold text-slate-800 block">{client.name}</span>
+                                      {client.nickname && (
+                                        <span className="text-xxs text-slate-500 block">Resp.: {client.nickname}</span>
+                                      )}
+                                    </td>
+                                    <td className="py-3.5 px-4 text-xs text-slate-600">
+                                      {!isInternalB2BPhone(client.phone) && (
+                                        <span className="font-mono block">{getFormattedPhone(client.phone)}</span>
+                                      )}
+                                      <span className="text-slate-400 block">{client.street || 'Sem endereço informado'}</span>
+                                    </td>
+                                    <td className="py-3.5 px-4 font-mono text-xs font-semibold text-slate-700">
+                                      {clientB2BOrders.length}
+                                    </td>
+                                    <td className="py-3.5 px-4 font-mono font-bold text-emerald-700">
+                                      R$ {clientTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                    </td>
+                                    <td className="py-3.5 px-4 text-right">
+                                      <div className="flex items-center justify-end gap-2">
+                                        <button
+                                          onClick={() => startEditB2BCustomer(client)}
+                                          className="p-1.5 hover:bg-slate-100 text-slate-500 hover:text-indigo-600 rounded transition"
+                                          title="Editar Padaria"
+                                        >
+                                          <Edit className="w-4 h-4" />
+                                        </button>
+                                        <button
+                                          onClick={() => deleteCustomer(client.id)}
+                                          className="p-1.5 hover:bg-red-50 text-slate-400 hover:text-red-600 rounded transition"
+                                          title="Excluir Padaria e Histórico"
+                                        >
+                                          <Trash2 className="w-4 h-4" />
+                                        </button>
+                                        <button
+                                          onClick={() => openNewB2BOrderModal(client)}
+                                          className="py-1.5 px-3 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 text-xs font-semibold rounded-lg transition inline-flex items-center gap-1.5"
+                                        >
+                                          <PlusCircle className="w-3.5 h-3.5" />
+                                          Computar Pedido
+                                        </button>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                )
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             )
@@ -9954,47 +10648,61 @@ function App() {
           <div className="space-y-6">
             {(() => {
               const paidDeliveredOrders = orders.filter(o => o.status === 'delivered' && o.payment_status === 'paid');
-              const pendingPaymentOrders = orders.filter(o => o.status === 'delivered' && o.payment_status !== 'paid');
-              const pendingDeliveryOrders = orders.filter(o => o.status !== 'delivered' && o.status !== 'cancelled');
+              const b2bComputedOrders = orders.filter(o => isB2BCustomer(o.customers) && o.status !== 'cancelled');
+              const pendingPaymentOrders = orders.filter(o => !isB2BCustomer(o.customers) && o.status === 'delivered' && o.payment_status !== 'paid');
+              const pendingDeliveryOrders = orders.filter(o => !isB2BCustomer(o.customers) && o.status !== 'delivered' && o.status !== 'cancelled');
 
               const totalPaidValue = paidDeliveredOrders.reduce((sum, o) => sum + parseFloat(o.total_price || 0), 0);
+              const totalB2BValue = b2bComputedOrders.reduce((sum, o) => sum + parseFloat(o.total_price || 0), 0);
               const totalPendingPaymentValue = pendingPaymentOrders.reduce((sum, o) => sum + parseFloat(o.total_price || 0), 0);
               const totalPendingDeliveryValue = pendingDeliveryOrders.reduce((sum, o) => sum + parseFloat(o.total_price || 0), 0);
 
               return (
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                   <div className="bg-white border border-emerald-100 rounded-2xl p-5 shadow-sm flex flex-col justify-between">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xxs font-bold text-emerald-600 uppercase tracking-wider font-mono">Total Recebido (Pagos)</span>
-                      <span className="text-xxs bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-lg font-mono font-bold">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xxs font-bold text-emerald-600 uppercase tracking-wider font-mono">Total Computado</span>
+                      <span className="text-xxs bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-lg font-mono font-bold shrink-0">
                         {paidDeliveredOrders.length} {paidDeliveredOrders.length === 1 ? 'pedido' : 'pedidos'}
                       </span>
                     </div>
-                    <p className="text-2xl font-extrabold text-emerald-700 font-mono mt-2">
+                    <p className="text-xl font-extrabold text-emerald-700 font-mono mt-2">
                       R$ {totalPaidValue.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </p>
                   </div>
 
+                  <div className="bg-white border border-indigo-200 rounded-2xl p-5 shadow-sm flex flex-col justify-between">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xxs font-bold text-indigo-600 uppercase tracking-wider font-mono">B2B (Padarias)</span>
+                      <span className="text-xxs bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-lg font-mono font-bold shrink-0">
+                        {b2bComputedOrders.length} {b2bComputedOrders.length === 1 ? 'pedido' : 'pedidos'}
+                      </span>
+                    </div>
+                    <p className="text-xl font-extrabold text-indigo-700 font-mono mt-2">
+                      R$ {totalB2BValue.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </p>
+                  </div>
+
                   <div className="bg-white border border-red-200 rounded-2xl p-5 shadow-sm flex flex-col justify-between">
-                    <div className="flex items-center justify-between">
+                    <div className="flex items-center justify-between gap-2">
                       <span className="text-xxs font-bold text-red-600 uppercase tracking-wider font-mono">Pagamento Pendente</span>
-                      <span className="text-xxs bg-red-50 text-red-700 px-2 py-0.5 rounded-lg font-mono font-bold">
+                      <span className="text-xxs bg-red-50 text-red-700 px-2 py-0.5 rounded-lg font-mono font-bold shrink-0">
                         {pendingPaymentOrders.length} {pendingPaymentOrders.length === 1 ? 'pedido' : 'pedidos'}
                       </span>
                     </div>
-                    <p className="text-2xl font-extrabold text-red-600 font-mono mt-2">
+                    <p className="text-xl font-extrabold text-red-600 font-mono mt-2">
                       R$ {totalPendingPaymentValue.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </p>
                   </div>
 
                   <div className="bg-white border border-amber-200 rounded-2xl p-5 shadow-sm flex flex-col justify-between">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xxs font-bold text-amber-600 uppercase tracking-wider font-mono">Pedidos Pendentes (Entrega)</span>
-                      <span className="text-xxs bg-amber-50 text-amber-700 px-2 py-0.5 rounded-lg font-mono font-bold">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xxs font-bold text-amber-600 uppercase tracking-wider font-mono">Entrega Pendente</span>
+                      <span className="text-xxs bg-amber-50 text-amber-700 px-2 py-0.5 rounded-lg font-mono font-bold shrink-0">
                         {pendingDeliveryOrders.length} {pendingDeliveryOrders.length === 1 ? 'pedido' : 'pedidos'}
                       </span>
                     </div>
-                    <p className="text-2xl font-extrabold text-amber-700 font-mono mt-2">
+                    <p className="text-xl font-extrabold text-amber-700 font-mono mt-2">
                       R$ {totalPendingDeliveryValue.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </p>
                   </div>
@@ -10215,8 +10923,17 @@ function App() {
                               #{ord.id.substring(0, 8).toUpperCase()}
                             </td>
                             <td className="py-3.5 px-4">
-                              <span className="font-bold text-slate-700 block">{ord.customers?.name || 'Cliente'}</span>
-                              <span className="text-xxs text-slate-400 font-mono block">{getFormattedPhone(ord.customers?.phone)}</span>
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className="font-bold text-slate-700">{ord.customers?.name || 'Cliente'}</span>
+                                {isB2BCustomer(ord.customers) && (
+                                  <span className="text-[10px] font-mono font-bold bg-indigo-50 text-indigo-700 border border-indigo-200/70 px-1.5 py-0.5 rounded">
+                                    B2B
+                                  </span>
+                                )}
+                              </div>
+                              {!isInternalB2BPhone(ord.customers?.phone) && (
+                                <span className="text-xxs text-slate-400 font-mono block">{getFormattedPhone(ord.customers?.phone)}</span>
+                              )}
                               {ord.notes && (
                                 <span className="text-xxs text-amber-600 block mt-1 leading-normal"><strong>Obs:</strong> {ord.notes}</span>
                               )}
@@ -10358,7 +11075,7 @@ function App() {
                     )}
                   </div>
                   <div className="flex items-center justify-between text-xxs font-mono text-slate-400 mt-1.5 px-1">
-                    <span>Mostrando {products.filter(p => p.is_active !== false && (!clientAddProductSearchQuery || p.name.toLowerCase().includes(clientAddProductSearchQuery.toLowerCase()))).length} produtos disponíveis</span>
+                    <span>Mostrando {products.filter(p => (isAdminImpersonating || user?.isAdmin || p.is_active !== false) && (!clientAddProductSearchQuery || p.name.toLowerCase().includes(clientAddProductSearchQuery.toLowerCase()))).length} produtos disponíveis</span>
                     <span>Dica: clique em qualquer card para selecionar</span>
                   </div>
                 </div>
@@ -10366,7 +11083,7 @@ function App() {
                 {/* Products Grid */}
                 <div className="flex-1 overflow-y-auto pr-1">
                   {(() => {
-                    const filtered = products.filter(p => p.is_active !== false && (!clientAddProductSearchQuery || p.name.toLowerCase().includes(clientAddProductSearchQuery.toLowerCase())))
+                    const filtered = products.filter(p => (isAdminImpersonating || user?.isAdmin || p.is_active !== false) && (!clientAddProductSearchQuery || p.name.toLowerCase().includes(clientAddProductSearchQuery.toLowerCase())))
                     if (filtered.length === 0) {
                       return (
                         <div className="h-64 flex flex-col items-center justify-center text-slate-400 text-sm gap-2">
@@ -10477,7 +11194,7 @@ function App() {
                     Adicionar Produto ao Pedido
                   </span>
                   <span className="text-xs text-slate-500 font-mono bg-white px-2.5 py-1 rounded-lg border border-slate-200/60 shadow-2xs font-semibold">
-                    {products.filter(p => p.is_active !== false).length} disponíveis
+                    {products.filter(p => isAdminImpersonating || user?.isAdmin || p.is_active !== false).length} disponíveis
                   </span>
                 </div>
 
@@ -10498,7 +11215,7 @@ function App() {
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       <span className="text-xs font-bold text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-lg border border-indigo-100/80">
-                        Ver produtos ({products.filter(p => p.is_active !== false).length})
+                        Ver produtos ({products.filter(p => isAdminImpersonating || user?.isAdmin || p.is_active !== false).length})
                       </span>
                       <ChevronDown className="w-4 h-4 text-slate-400 group-hover:text-indigo-600 transition" />
                     </div>
@@ -10859,6 +11576,7 @@ function App() {
       {showItemReportModal && (() => {
         // Calculate filteredOrders for 'current' filter context
         const filteredCurrentOrders = orders.filter((order) => {
+          if (isB2BCustomer(order.customers)) return false;
           let matchesTab = false;
           if (adminOrderSubTab === 'pending') {
             matchesTab = order.status !== 'delivered' && !order.is_assembled;
@@ -10899,7 +11617,9 @@ function App() {
         } else if (itemReportFilter === 'delivered') {
           targetOrders = orders.filter(o => o.status === 'delivered');
         } else if (itemReportFilter === 'payment_pending') {
-          targetOrders = orders.filter(o => o.status === 'delivered' && o.payment_status !== 'paid');
+          targetOrders = orders.filter(o => !isB2BCustomer(o.customers) && o.status === 'delivered' && o.payment_status !== 'paid');
+        } else if (itemReportFilter === 'b2b') {
+          targetOrders = orders.filter(o => isB2BCustomer(o.customers) && o.status !== 'cancelled');
         } else {
           targetOrders = orders.filter(o => o.status !== 'cancelled');
         }
@@ -11080,7 +11800,13 @@ function App() {
                   onClick={() => setItemReportFilter('payment_pending')}
                   className={`px-3 py-1.5 rounded-lg font-semibold transition ${itemReportFilter === 'payment_pending' ? 'bg-white text-red-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
                 >
-                  Pag. Pendente ({orders.filter(o => o.status === 'delivered' && o.payment_status !== 'paid').length})
+                  Pag. Pendente ({orders.filter(o => !isB2BCustomer(o.customers) && o.status === 'delivered' && o.payment_status !== 'paid').length})
+                </button>
+                <button
+                  onClick={() => setItemReportFilter('b2b')}
+                  className={`px-3 py-1.5 rounded-lg font-semibold transition ${itemReportFilter === 'b2b' ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
+                >
+                  B2B ({orders.filter(o => isB2BCustomer(o.customers) && o.status !== 'cancelled').length})
                 </button>
                 <button
                   onClick={() => setItemReportFilter('all')}
@@ -11185,6 +11911,613 @@ function App() {
             </div>
           </div>
         );
+      })()}
+
+      {/* MODAL: FAZER PEDIDO (ESCOLHER CLIENTE) */}
+      {showPlaceOrderCustomerModal && (() => {
+        const regularCustomers = adminCustomers.filter(c => !isB2BCustomer(c))
+        const b2bCustomers = adminCustomers.filter(isB2BCustomer)
+        const uniqueGroups = Array.from(new Set(regularCustomers.map(c => c.group_name).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'pt-BR'))
+
+        const activeList = placeOrderModalTab === 'b2b' ? b2bCustomers : regularCustomers
+        const filteredList = activeList.filter(c => {
+          if (placeOrderModalTab === 'clients') {
+            if (placeOrderCustomerGroupFilter === 'none' && c.group_name) return false
+            if (placeOrderCustomerGroupFilter !== 'all' && placeOrderCustomerGroupFilter !== 'none') {
+              if (!c.group_name || c.group_name.trim().toLowerCase() !== placeOrderCustomerGroupFilter.trim().toLowerCase()) {
+                return false
+              }
+            }
+          }
+          if (!placeOrderCustomerSearch.trim()) return true
+          const q = placeOrderCustomerSearch.toLowerCase()
+          return (
+            (c.name && c.name.toLowerCase().includes(q)) ||
+            (c.nickname && c.nickname.toLowerCase().includes(q)) ||
+            (!isInternalB2BPhone(c.phone) && c.phone && c.phone.includes(q)) ||
+            (c.group_name && c.group_name.toLowerCase().includes(q))
+          )
+        })
+
+        return (
+          <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl w-full max-w-2xl shadow-2xl p-6 space-y-4 max-h-[90vh] flex flex-col animate-scale-in">
+              <div className="flex items-start justify-between pb-3 border-b border-slate-100 shrink-0">
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 bg-indigo-50 text-indigo-600 rounded-xl">
+                    <ShoppingBag className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-slate-800 text-lg leading-tight">Fazer Pedido — Escolher Cliente</h3>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Selecione o cliente para montar o pedido (todos os produtos estarão disponíveis, ativos ou ocultos).
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowPlaceOrderCustomerModal(false)}
+                  className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Tabs: Clientes vs B2B */}
+              <div className="flex flex-wrap items-center justify-between gap-2 shrink-0">
+                <div className="flex gap-1.5 p-1 bg-slate-100 rounded-xl text-xs">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPlaceOrderModalTab('clients')
+                      setPlaceOrderCustomerSearch('')
+                    }}
+                    className={`px-3.5 py-1.5 rounded-lg font-semibold transition flex items-center gap-1.5 ${placeOrderModalTab === 'clients' ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
+                  >
+                    <User className="w-3.5 h-3.5" />
+                    Clientes ({regularCustomers.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPlaceOrderModalTab('b2b')
+                      setPlaceOrderCustomerSearch('')
+                    }}
+                    className={`px-3.5 py-1.5 rounded-lg font-semibold transition flex items-center gap-1.5 ${placeOrderModalTab === 'b2b' ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
+                  >
+                    <Store className="w-3.5 h-3.5" />
+                    Padarias / B2B ({b2bCustomers.length})
+                  </button>
+                </div>
+
+                {placeOrderModalTab === 'clients' ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowPlaceOrderCustomerModal(false)
+                      setCustomerForm({ name: '', phone: '', nickname: '', group_name: '' })
+                      setShowCustomerModal(true)
+                    }}
+                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-xs font-semibold transition flex items-center gap-1.5"
+                  >
+                    <PlusCircle className="w-3.5 h-3.5 text-indigo-400" />
+                    Novo Cliente
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowPlaceOrderCustomerModal(false)
+                      setEditingB2BCustomer(null)
+                      setB2bCustomerForm({ name: '', contact_name: '', phone: '', address: '' })
+                      setShowB2BCustomerModal(true)
+                    }}
+                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-xs font-semibold transition flex items-center gap-1.5"
+                  >
+                    <PlusCircle className="w-3.5 h-3.5 text-indigo-400" />
+                    Nova Padaria B2B
+                  </button>
+                )}
+              </div>
+
+              {/* Search & Group Filter */}
+              <div className="flex flex-col sm:flex-row gap-2.5 shrink-0">
+                <div className="relative flex-1">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type="text"
+                    autoFocus
+                    placeholder={placeOrderModalTab === 'b2b' ? 'Buscar padaria por nome ou responsável...' : 'Buscar cliente por nome, apelido ou telefone...'}
+                    value={placeOrderCustomerSearch}
+                    onChange={(e) => setPlaceOrderCustomerSearch(e.target.value)}
+                    className="w-full pl-10 pr-9 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 text-sm focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                  />
+                  {placeOrderCustomerSearch && (
+                    <button
+                      type="button"
+                      onClick={() => setPlaceOrderCustomerSearch('')}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+
+                {placeOrderModalTab === 'clients' && uniqueGroups.length > 0 && (
+                  <select
+                    value={placeOrderCustomerGroupFilter}
+                    onChange={(e) => setPlaceOrderCustomerGroupFilter(e.target.value)}
+                    className="text-xs font-semibold bg-slate-50 border border-slate-200 px-3 py-2.5 rounded-xl text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                  >
+                    <option value="all">Todos os Grupos</option>
+                    <option value="none">Sem Grupo</option>
+                    {uniqueGroups.map((g, idx) => (
+                      <option key={idx} value={g}>{g}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+
+              {/* Customers List */}
+              <div className="flex-1 overflow-y-auto pr-1 space-y-2 max-h-[55vh]">
+                {filteredList.length === 0 ? (
+                  <div className="py-12 text-center text-slate-400">
+                    {placeOrderModalTab === 'b2b' ? (
+                      <Store className="w-10 h-10 mx-auto mb-2 text-slate-300" />
+                    ) : (
+                      <User className="w-10 h-10 mx-auto mb-2 text-slate-300" />
+                    )}
+                    <p className="text-sm font-semibold text-slate-600">
+                      {placeOrderModalTab === 'b2b' ? 'Nenhuma padaria B2B encontrada.' : 'Nenhum cliente encontrado.'}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="divide-y divide-slate-100 border border-slate-100 rounded-xl overflow-hidden">
+                    {filteredList.map(c => (
+                      <button
+                        key={c.id}
+                        type="button"
+                        onClick={() => startImpersonatingCustomer(c)}
+                        className="w-full text-left px-4 py-3 bg-white hover:bg-indigo-50/60 transition flex items-center justify-between gap-3 group"
+                      >
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-bold text-slate-800 text-sm group-hover:text-indigo-700 transition truncate">
+                              {c.nickname ? `${c.nickname} (${c.name})` : c.name}
+                            </span>
+                            {c.group_name && (
+                              <span className="text-[10px] font-mono font-bold bg-indigo-50 text-indigo-600 border border-indigo-100 px-1.5 py-0.5 rounded">
+                                {c.group_name}
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-3 text-xxs text-slate-500 mt-0.5 font-mono flex-wrap">
+                            {!isInternalB2BPhone(c.phone) && (
+                              <span>{getFormattedPhone(c.phone)}</span>
+                            )}
+                            {c.street && (
+                              <span className="font-sans text-slate-400 truncate max-w-xs">{c.street}{c.neighborhood ? `, ${c.neighborhood}` : ''}</span>
+                            )}
+                          </div>
+                        </div>
+                        <span className="px-3 py-1.5 bg-indigo-50 group-hover:bg-indigo-600 text-indigo-700 group-hover:text-white rounded-lg text-xs font-bold transition shrink-0 flex items-center gap-1">
+                          <span>{placeOrderModalTab === 'b2b' ? 'Computar' : 'Selecionar'}</span>
+                          <ChevronRight className="w-3.5 h-3.5" />
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )
+      })()}
+
+      {/* MODAL: CADASTRAR / EDITAR PADARIA B2B */}
+      {showB2BCustomerModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <form onSubmit={handleSaveB2BCustomer} className="bg-white rounded-2xl w-full max-w-md shadow-2xl p-6 space-y-4 animate-scale-in">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <h3 className="font-bold text-slate-800 text-base flex items-center gap-2">
+                <Store className="w-5 h-5 text-indigo-600" />
+                {editingB2BCustomer ? 'Editar Padaria / Cliente B2B' : 'Cadastrar Padaria / Cliente B2B'}
+              </h3>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowB2BCustomerModal(false)
+                  setEditingB2BCustomer(null)
+                }}
+                className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-400"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Nome da Padaria / Empresa *</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Ex: Padaria Pão Dourado"
+                  value={b2bCustomerForm.name}
+                  onChange={(e) => setB2bCustomerForm(prev => ({ ...prev, name: e.target.value }))}
+                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Responsável / Apelido (Opcional)</label>
+                <input
+                  type="text"
+                  placeholder="Ex: Sr. João"
+                  value={b2bCustomerForm.contact_name}
+                  onChange={(e) => setB2bCustomerForm(prev => ({ ...prev, contact_name: e.target.value }))}
+                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Telefone com DDD (Opcional)</label>
+                <input
+                  type="tel"
+                  placeholder="(83) 99999-9999"
+                  value={b2bCustomerForm.phone}
+                  onChange={(e) => setB2bCustomerForm(prev => ({ ...prev, phone: e.target.value }))}
+                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Endereço / Referência (Opcional)</label>
+                <input
+                  type="text"
+                  placeholder="Ex: Av. Principal, 500 - Centro"
+                  value={b2bCustomerForm.address}
+                  onChange={(e) => setB2bCustomerForm(prev => ({ ...prev, address: e.target.value }))}
+                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                />
+              </div>
+            </div>
+
+            <div className="pt-2 border-t border-slate-100 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowB2BCustomerModal(false)
+                  setEditingB2BCustomer(null)
+                }}
+                className="px-4 py-2.5 border border-slate-200 text-slate-600 hover:bg-slate-50 rounded-xl text-xs font-semibold transition"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition shadow-sm"
+              >
+                {editingB2BCustomer ? 'Salvar Alterações' : 'Cadastrar Padaria'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* MODAL: COMPUTAR PEDIDO B2B (PADARIAS) */}
+      {showB2BOrderModal && (() => {
+        const b2bClients = adminCustomers.filter(isB2BCustomer)
+        const subtotal = b2bOrderItems.reduce((sum, i) => sum + (parseFloat(i.price_unit || 0) * parseFloat(i.quantity || 0)), 0)
+        const discountNum = Math.min(subtotal, Math.max(0, parseFloat(b2bOrderDiscount) || 0))
+        const finalTotal = Math.max(0, subtotal - discountNum)
+
+        return (
+          <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5">
+            <div className="bg-white rounded-2xl w-full max-w-4xl shadow-2xl p-5 sm:p-6 space-y-4 max-h-[92vh] flex flex-col relative overflow-hidden animate-scale-in">
+              {/* Product Picker Overlay inside B2B Modal */}
+              {showB2BProductPicker && (
+                <div className="absolute inset-0 z-40 bg-white rounded-2xl flex flex-col p-4 sm:p-6 shadow-2xl animate-fade-in">
+                  <div className="flex items-center justify-between pb-3 border-b border-slate-100 shrink-0">
+                    <div>
+                      <h3 className="font-bold text-slate-800 text-base">Selecionar Produto (Todos os Cadastrados)</h3>
+                      <p className="text-xs text-slate-500">Todos os produtos aparecem aqui, estando ativos no catálogo ou não.</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowB2BProductPicker(false)}
+                      className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold flex items-center gap-1"
+                    >
+                      <X className="w-4 h-4" />
+                      Fechar
+                    </button>
+                  </div>
+
+                  <div className="py-3 shrink-0">
+                    <div className="relative">
+                      <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                      <input
+                        type="text"
+                        autoFocus
+                        placeholder="Buscar produto por nome..."
+                        value={b2bProductSearch}
+                        onChange={(e) => setB2bProductSearch(e.target.value)}
+                        className="w-full pl-10 pr-9 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 text-sm focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex-1 overflow-y-auto pr-1">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 pb-2">
+                      {products
+                        .filter(p => !b2bProductSearch.trim() || p.name.toLowerCase().includes(b2bProductSearch.toLowerCase()))
+                        .map(prod => {
+                          const prodUnit = prod.unit?.toLowerCase().startsWith('kg') ? 'kg' : 'un'
+                          return (
+                            <button
+                              key={prod.id}
+                              type="button"
+                              onClick={() => {
+                                setB2bSelectedProduct(prod)
+                                setB2bAddQty(1)
+                                setB2bAddPrice(String(prod.price ?? ''))
+                                setShowB2BProductPicker(false)
+                              }}
+                              className="text-left p-3 rounded-xl border border-slate-200 bg-white hover:border-indigo-400 hover:bg-indigo-50/40 transition flex items-center gap-3 group"
+                            >
+                              <div className="w-11 h-11 rounded-xl bg-slate-100 border border-slate-200/80 p-1 flex items-center justify-center shrink-0 overflow-hidden">
+                                {prod.image_url ? (
+                                  <img src={prod.image_url} alt="" className="w-full h-full object-contain" />
+                                ) : (
+                                  <Package className="w-5 h-5 text-slate-300" />
+                                )}
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <p className="font-bold text-slate-800 text-xs line-clamp-1 group-hover:text-indigo-600">{prod.name}</p>
+                                <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 font-mono font-bold">{prodUnit}</span>
+                                  {!prod.is_active && (
+                                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-700 text-white font-mono font-bold">Oculto</span>
+                                  )}
+                                </div>
+                                <p className="text-xs font-bold text-slate-900 font-mono mt-0.5">
+                                  R$ {Number(prod.price || 0).toFixed(2)}
+                                </p>
+                              </div>
+                            </button>
+                          )
+                        })}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Modal Header */}
+              <div className="flex items-center justify-between border-b border-slate-100 pb-3 shrink-0">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-indigo-50 text-indigo-600 rounded-xl flex items-center justify-center">
+                    <Store className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-slate-800 text-lg leading-tight">Computar Pedido B2B</h3>
+                    <p className="text-xs text-slate-500">Registra o pedido e computa diretamente no Financeiro (sem cobrança ou mensagem).</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowB2BOrderModal(false)}
+                  className="p-2 hover:bg-slate-100 rounded-xl text-slate-400 hover:text-slate-600 transition"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Scrollable Body */}
+              <div className="space-y-4 overflow-y-auto flex-1 pr-1">
+                {/* 1. Select B2B Client */}
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1 font-mono">Padaria / Cliente B2B *</label>
+                  <select
+                    value={b2bOrderCustomerId}
+                    onChange={(e) => setB2bOrderCustomerId(e.target.value)}
+                    className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                  >
+                    <option value="">Selecione uma padaria...</option>
+                    {b2bClients.map(c => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}{c.nickname ? ` (${c.nickname})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* 2. Add Product */}
+                <div className="bg-slate-50 border border-slate-200/80 p-4 rounded-2xl space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-700 uppercase tracking-wider font-mono flex items-center gap-1.5">
+                      <PlusCircle className="w-4 h-4 text-indigo-600" />
+                      Adicionar Produtos
+                    </span>
+                    <span className="text-xxs text-slate-500 font-mono">{products.length} cadastrados</span>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowB2BProductPicker(true)}
+                    className="w-full py-2.5 px-4 bg-white hover:bg-slate-50 border border-slate-300 hover:border-indigo-400 rounded-xl text-left flex items-center justify-between text-xs sm:text-sm text-slate-600 transition"
+                  >
+                    <span className="truncate font-medium">
+                      {b2bSelectedProduct ? `Selecionado: ${b2bSelectedProduct.name}` : 'Clique para escolher qualquer produto...'}
+                    </span>
+                    <span className="text-xs font-bold text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-lg shrink-0">
+                      Ver todos ({products.length})
+                    </span>
+                  </button>
+
+                  {b2bSelectedProduct && (
+                    <div className="bg-white border border-indigo-200 rounded-xl p-3.5 flex flex-col sm:flex-row sm:items-end justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="font-bold text-slate-800 text-sm truncate">{b2bSelectedProduct.name}</p>
+                        <p className="text-xxs text-slate-400 font-mono">
+                          Preço padrão: R$ {Number(b2bSelectedProduct.price || 0).toFixed(2)} / {b2bSelectedProduct.unit || 'un'} (edite o valor B2B ao lado)
+                        </p>
+                      </div>
+                      <div className="flex items-end gap-2.5 flex-wrap">
+                        <div>
+                          <label className="block text-[10px] font-bold text-slate-500 uppercase font-mono mb-0.5">Qtd ({b2bSelectedProduct.unit || 'un'})</label>
+                          <input
+                            type="number"
+                            step={b2bSelectedProduct.unit === 'kg' ? '0.001' : '1'}
+                            min="0.001"
+                            value={b2bAddQty}
+                            onChange={(e) => setB2bAddQty(e.target.value)}
+                            className="w-20 px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-center text-sm font-mono font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-bold text-indigo-600 uppercase font-mono mb-0.5">Valor Unit. B2B (R$)</label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            placeholder="0,00"
+                            value={b2bAddPrice}
+                            onChange={(e) => setB2bAddPrice(e.target.value)}
+                            className="w-28 px-2.5 py-1.5 bg-indigo-50/40 border border-indigo-200 rounded-lg text-center text-sm font-mono font-bold text-indigo-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleAddB2BItem}
+                          className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          Adicionar
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* 3. Items List */}
+                <div className="space-y-2">
+                  <span className="text-xs font-bold text-slate-600 uppercase tracking-wider font-mono block">
+                    Itens do Pedido B2B ({b2bOrderItems.length})
+                  </span>
+                  {b2bOrderItems.length === 0 ? (
+                    <div className="p-6 text-center text-slate-400 text-xs border border-dashed border-slate-200 rounded-xl">
+                      Nenhum item adicionado ainda. Escolha os produtos acima.
+                    </div>
+                  ) : (
+                    <div className="divide-y divide-slate-100 border border-slate-200 rounded-xl overflow-hidden bg-white">
+                      {b2bOrderItems.map((item, idx) => (
+                        <div key={item.id || `${item.product_id}_${idx}`} className="p-3 flex flex-wrap items-center justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <p className="font-bold text-slate-800 text-xs sm:text-sm truncate">{item.product_name}</p>
+                            <span className="text-xxs text-slate-400 font-mono">Unidade: {item.unit}</span>
+                          </div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <div className="flex items-center gap-1">
+                              <span className="text-[10px] text-slate-400 font-mono">Qtd:</span>
+                              <input
+                                type="number"
+                                step={item.unit === 'kg' ? '0.001' : '1'}
+                                min="0.001"
+                                value={item.quantity}
+                                onChange={(e) => {
+                                  const val = parseFloat(e.target.value)
+                                  setB2bOrderItems(prev => prev.map((it, i) => i === idx ? { ...it, quantity: isNaN(val) ? 0 : val } : it))
+                                }}
+                                className="w-16 px-2 py-1 bg-slate-50 border border-slate-200 rounded-lg text-center text-xs font-mono font-bold text-slate-800"
+                              />
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <span className="text-[10px] text-slate-400 font-mono">R$ un:</span>
+                              <input
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                value={item.price_unit}
+                                onChange={(e) => {
+                                  const val = parseFloat(e.target.value)
+                                  setB2bOrderItems(prev => prev.map((it, i) => i === idx ? { ...it, price_unit: isNaN(val) ? 0 : val } : it))
+                                }}
+                                className="w-20 px-2 py-1 bg-slate-50 border border-slate-200 rounded-lg text-center text-xs font-mono font-bold text-slate-800"
+                              />
+                            </div>
+                            <span className="text-xs font-bold text-slate-900 font-mono w-24 text-right">
+                              R$ {(parseFloat(item.price_unit || 0) * parseFloat(item.quantity || 0)).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => setB2bOrderItems(prev => prev.filter((_, i) => i !== idx))}
+                              className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* 4. Discount & Notes */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1 font-mono">Desconto R$ (Opcional)</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      placeholder="0,00"
+                      value={b2bOrderDiscount}
+                      onChange={(e) => setB2bOrderDiscount(e.target.value)}
+                      className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-mono text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1 font-mono">Observações (Opcional)</label>
+                    <input
+                      type="text"
+                      placeholder="Ex: Entrega semanal de ovos..."
+                      value={b2bOrderNotes}
+                      onChange={(e) => setB2bOrderNotes(e.target.value)}
+                      className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Footer */}
+              <div className="border-t border-slate-100 pt-4 flex items-center justify-between gap-4 flex-wrap bg-slate-50/70 p-4 rounded-2xl shrink-0">
+                <div>
+                  <span className="text-xxs text-slate-500 uppercase font-bold font-mono block">Total a Computar no Financeiro</span>
+                  <span className="text-xl font-black text-slate-900 font-mono">
+                    R$ {finalTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowB2BOrderModal(false)}
+                    className="px-4 py-2.5 border border-slate-200 text-slate-600 hover:bg-white rounded-xl text-xs font-semibold transition"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSaveB2BOrder}
+                    disabled={!b2bOrderCustomerId || b2bOrderItems.length === 0}
+                    className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition shadow-md flex items-center gap-1.5"
+                  >
+                    <Check className="w-4 h-4" />
+                    Computar Pedido B2B
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )
       })()}
 
       {/* MODAL: ADMIN EDIT CUSTOMER */}
